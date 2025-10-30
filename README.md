@@ -17,7 +17,7 @@ Live Polymarket trading with two Telegram bots. Bot A suggests trades and lets y
 - Artifact Registry repository for Docker images
 - Firestore (Native mode) created in the project
 - Telegram bot tokens (create two bots with BotFather)
-- Polymarket API key
+- Polymarket CLOB access (wallet private key + proxy address)
 
 ## Secrets vs Env Vars
 - Put secrets in Secret Manager (referenced by Cloud Run env from secrets) and GitHub Secrets (for CI deploy only).
@@ -25,13 +25,16 @@ Live Polymarket trading with two Telegram bots. Bot A suggests trades and lets y
 
 Variables and where to store them:
 - Secrets (GCP Secret Manager + Cloud Run from-secret mapping)
-  - `POLYMARKET_API_KEY`
+  - `WALLET_PRIVATE_KEY` (your trading wallet/Magic private key)
   - `TELEGRAM_BOT_A_TOKEN`
   - `TELEGRAM_BOT_B_TOKEN`
 - Non-secrets (Cloud Run environment variables)
-  - `POLYMARKET_API_BASE` (default `https://api.polymarket.com`)
+  - `CLOB_HOST` (default `https://clob.polymarket.com`)
+  - `POLYMARKET_PROXY_ADDRESS` (proxy shown under your profile picture)
+  - `SIGNATURE_TYPE` (1 = Magic/email, 2 = browser wallet/EOA; default 2)
+  - `CHAIN_ID` (default 137 for Polygon)
   - `EDGE_BPS`, `MIN_LIQUIDITY_USD`, `DEFAULT_SL_PCT`, `DEFAULT_TP_PCT`
-  - `FIRESTORE_PROJECT_ID`
+  - `GCP_PROJECT_ID` (optional; auto-detected at runtime on Cloud Run)
   - `BOT_B_DEFAULT_CHAT_ID` (Telegram chat ID for Bot B notifications)
   - `APP_MODULE` (set per service as above)
   - `TELEGRAM_BOT_A_WEBHOOK_URL`, `TELEGRAM_BOT_B_WEBHOOK_URL` (the public URLs of the Cloud Run services for bot webhooks)
@@ -51,15 +54,20 @@ Variables and where to store them:
 5) Telegram Bots
    - Create two bots with BotFather, note tokens.
    - Store tokens in Secret Manager as `TELEGRAM_BOT_A_TOKEN`, `TELEGRAM_BOT_B_TOKEN`.
-6) Polymarket API Key
-   - Store in Secret Manager as `POLYMARKET_API_KEY`.
+6) Polymarket CLOB credentials
+   - Get your wallet private key (for Magic/email: follow the docs; for browser wallet/EOA: export from your wallet). See Polymarket quickstart: https://docs.polymarket.com/quickstart/orders/first-order
+   - Find your Polymarket Proxy address (below your avatar on Polymarket).
+   - Store in Secret Manager:
+     - `WALLET_PRIVATE_KEY` (secret)
+   - Set Cloud Run env (non-secrets):
+     - `POLYMARKET_PROXY_ADDRESS`, `CLOB_HOST=https://clob.polymarket.com`, `SIGNATURE_TYPE` (1 or 2), `CHAIN_ID=137`.
 7) First Deployment (trigger CI)
    - Push to `master` to run GitHub Actions workflow `.github/workflows/deploy.yml`.
    - The workflow builds and pushes the image, then deploys 4 Cloud Run services with the proper `APP_MODULE`.
 8) Configure Cloud Run env and secret mappings
    - For each service (`polytrade-bot-a`, `polytrade-bot-b`, `polytrade-analyzer`, `polytrade-monitor`):
-     - Set env vars: `POLYMARKET_API_BASE`, `EDGE_BPS`, `MIN_LIQUIDITY_USD`, `DEFAULT_SL_PCT`, `DEFAULT_TP_PCT`, `FIRESTORE_PROJECT_ID`, and the service-specific `APP_MODULE`.
-     - Map secrets: `POLYMARKET_API_KEY`, `TELEGRAM_BOT_A_TOKEN` (for Bot A only), `TELEGRAM_BOT_B_TOKEN` (for Bot B only).
+    - Set env vars: `CLOB_HOST`, `POLYMARKET_PROXY_ADDRESS`, `SIGNATURE_TYPE`, `CHAIN_ID`, `EDGE_BPS`, `MIN_LIQUIDITY_USD`, `DEFAULT_SL_PCT`, `DEFAULT_TP_PCT`, `GCP_PROJECT_ID` (optional), and the service-specific `APP_MODULE`.
+    - Map secrets: `WALLET_PRIVATE_KEY`, `TELEGRAM_BOT_A_TOKEN` (for Bot A only), `TELEGRAM_BOT_B_TOKEN` (for Bot B only).
 9) Get Cloud Run URLs and set Telegram webhooks
    - After deploy, note `polytrade-bot-a` and `polytrade-bot-b` URLs.
    - Set env `TELEGRAM_BOT_A_WEBHOOK_URL` and `TELEGRAM_BOT_B_WEBHOOK_URL` to those URLs.

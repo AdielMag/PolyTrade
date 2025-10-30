@@ -15,6 +15,18 @@ jobs:
       REPO: ${{ secrets.GAR_REPOSITORY }}
       IMAGE: ${{ secrets.IMAGE_NAME }}
       IMAGE_URI: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/${{ secrets.IMAGE_NAME }}:${{ github.sha }}
+      # Runtime configuration (from GitHub Environments/Variables)
+      CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
+      POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
+      SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
+      CHAIN_ID: ${{ vars.CHAIN_ID || '137' }}
+      EDGE_BPS: ${{ vars.EDGE_BPS || '50' }}
+      MIN_LIQUIDITY_USD: ${{ vars.MIN_LIQUIDITY_USD || '1000' }}
+      DEFAULT_SL_PCT: ${{ vars.DEFAULT_SL_PCT || '0.15' }}
+      DEFAULT_TP_PCT: ${{ vars.DEFAULT_TP_PCT || '0.25' }}
+      BOT_B_DEFAULT_CHAT_ID: ${{ vars.BOT_B_DEFAULT_CHAT_ID }}
+      TELEGRAM_BOT_A_WEBHOOK_URL: ${{ vars.TELEGRAM_BOT_A_WEBHOOK_URL }}
+      TELEGRAM_BOT_B_WEBHOOK_URL: ${{ vars.TELEGRAM_BOT_B_WEBHOOK_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,7 +51,8 @@ jobs:
             --image $IMAGE_URI \
             --platform managed \
             --allow-unauthenticated \
-            --update-env-vars APP_MODULE=polytrade.telegram.bot_a:app
+            --update-env-vars APP_MODULE=polytrade.telegram.bot_a:app,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=$POLYMARKET_PROXY_ADDRESS,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,EDGE_BPS=$EDGE_BPS,MIN_LIQUIDITY_USD=$MIN_LIQUIDITY_USD,DEFAULT_SL_PCT=$DEFAULT_SL_PCT,DEFAULT_TP_PCT=$DEFAULT_TP_PCT,TELEGRAM_BOT_A_WEBHOOK_URL=$TELEGRAM_BOT_A_WEBHOOK_URL \
+            --set-secrets WALLET_PRIVATE_KEY=WALLET_PRIVATE_KEY:latest,TELEGRAM_BOT_A_TOKEN=TELEGRAM_BOT_A_TOKEN:latest
 
       - name: Deploy Bot B
         run: |
@@ -48,7 +61,8 @@ jobs:
             --image $IMAGE_URI \
             --platform managed \
             --allow-unauthenticated \
-            --update-env-vars APP_MODULE=polytrade.telegram.bot_b:app
+            --update-env-vars APP_MODULE=polytrade.telegram.bot_b:app,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=$POLYMARKET_PROXY_ADDRESS,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,EDGE_BPS=$EDGE_BPS,MIN_LIQUIDITY_USD=$MIN_LIQUIDITY_USD,DEFAULT_SL_PCT=$DEFAULT_SL_PCT,DEFAULT_TP_PCT=$DEFAULT_TP_PCT,BOT_B_DEFAULT_CHAT_ID=$BOT_B_DEFAULT_CHAT_ID,TELEGRAM_BOT_B_WEBHOOK_URL=$TELEGRAM_BOT_B_WEBHOOK_URL \
+            --set-secrets WALLET_PRIVATE_KEY=WALLET_PRIVATE_KEY:latest,TELEGRAM_BOT_B_TOKEN=TELEGRAM_BOT_B_TOKEN:latest
 
       - name: Deploy Analyzer
         run: |
@@ -57,7 +71,8 @@ jobs:
             --image $IMAGE_URI \
             --platform managed \
             --allow-unauthenticated \
-            --update-env-vars APP_MODULE=polytrade.api.analyzer_app:app
+            --update-env-vars APP_MODULE=polytrade.api.analyzer_app:app,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=$POLYMARKET_PROXY_ADDRESS,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,EDGE_BPS=$EDGE_BPS,MIN_LIQUIDITY_USD=$MIN_LIQUIDITY_USD,DEFAULT_SL_PCT=$DEFAULT_SL_PCT,DEFAULT_TP_PCT=$DEFAULT_TP_PCT \
+            --set-secrets WALLET_PRIVATE_KEY=WALLET_PRIVATE_KEY:latest
 
       - name: Deploy Monitor
         run: |
@@ -66,6 +81,7 @@ jobs:
             --image $IMAGE_URI \
             --platform managed \
             --allow-unauthenticated \
-            --update-env-vars APP_MODULE=polytrade.api.monitor_app:app
+            --update-env-vars APP_MODULE=polytrade.api.monitor_app:app,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=$POLYMARKET_PROXY_ADDRESS,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,EDGE_BPS=$EDGE_BPS,MIN_LIQUIDITY_USD=$MIN_LIQUIDITY_USD,DEFAULT_SL_PCT=$DEFAULT_SL_PCT,DEFAULT_TP_PCT=$DEFAULT_TP_PCT \
+            --set-secrets WALLET_PRIVATE_KEY=WALLET_PRIVATE_KEY:latest
 
 

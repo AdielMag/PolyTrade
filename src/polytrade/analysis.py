@@ -23,15 +23,16 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
     now = int(time.time())
 
     for m in markets[:max_suggestions]:
-        market_id = m.get("id", "")
+        token_id = m.get("tokenId", "")
         title = m.get("title", "")
-        # Stub: pretend BUY YES with small edge
+        # Stub: BUY with small edge, placeholder price
         suggestion = {
-            "marketId": market_id,
+            "tokenId": token_id,
             "title": title,
             "side": "BUY_YES",
             "edgeBps": settings.edge_bps,
-            "sizeHint": 25.0,
+            "sizeHint": 1.0,
+            "price": 0.01,
             "expiresAt": now + 3600,
             "status": "OPEN",
         }

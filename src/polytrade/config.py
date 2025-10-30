@@ -3,9 +3,12 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Polymarket/API
-    polymarket_api_base: str = Field(default="https://api.polymarket.com", alias="POLYMARKET_API_BASE")
-    polymarket_api_key: str | None = Field(default=None, alias="POLYMARKET_API_KEY")
+    # Polymarket CLOB
+    clob_host: str = Field(default="https://clob.polymarket.com", alias="CLOB_HOST")
+    wallet_private_key: str | None = Field(default=None, alias="WALLET_PRIVATE_KEY")
+    proxy_address: str | None = Field(default=None, alias="POLYMARKET_PROXY_ADDRESS")
+    signature_type: int = Field(default=2, alias="SIGNATURE_TYPE")
+    chain_id: int = Field(default=137, alias="CHAIN_ID")
 
     # Telegram
     bot_a_token: str | None = Field(default=None, alias="TELEGRAM_BOT_A_TOKEN")
@@ -21,7 +24,7 @@ class Settings(BaseSettings):
     default_tp_pct: float = Field(default=0.25, alias="DEFAULT_TP_PCT")
 
     # GCP
-    firestore_project_id: str | None = Field(default=None, alias="FIRESTORE_PROJECT_ID")
+    gcp_project_id: str | None = Field(default=None, alias="GCP_PROJECT_ID")
 
     # Runtime app selector (Cloud Run)
     app_module: str | None = Field(default=None, alias="APP_MODULE")

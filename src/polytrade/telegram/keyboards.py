@@ -1,23 +1,21 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
-def amount_presets_kb(suggestion_id: str, market_id: str, side: str) -> InlineKeyboardMarkup:
+def amount_presets_kb(suggestion_id: str, token_id: str, side: str) -> InlineKeyboardMarkup:
     def btn(text: str, data: str) -> InlineKeyboardButton:
         return InlineKeyboardButton(text=text, callback_data=data)
 
     rows = [
-        [btn("5%", f"amt:{suggestion_id}:{market_id}:{side}:pct:5"), btn("10%", f"amt:{suggestion_id}:{market_id}:{side}:pct:10"), btn("25%", f"amt:{suggestion_id}:{market_id}:{side}:pct:25")],
-        [btn("50%", f"amt:{suggestion_id}:{market_id}:{side}:pct:50"), btn("Max", f"amt:{suggestion_id}:{market_id}:{side}:pct:100")],
-        [btn("$10", f"amt:{suggestion_id}:{market_id}:{side}:usd:10"), btn("$25", f"amt:{suggestion_id}:{market_id}:{side}:usd:25"), btn("$50", f"amt:{suggestion_id}:{market_id}:{side}:usd:50")],
-        [btn("Custom", f"amt:{suggestion_id}:{market_id}:{side}:custom:0")],
+        [btn("Size 1", f"amt:{suggestion_id}:{token_id}:{side}:size:1"), btn("Size 5", f"amt:{suggestion_id}:{token_id}:{side}:size:5"), btn("Size 10", f"amt:{suggestion_id}:{token_id}:{side}:size:10")],
+        [btn("Custom", f"amt:{suggestion_id}:{token_id}:{side}:custom:0")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def confirm_kb(suggestion_id: str, market_id: str, side: str, amount_usd: float) -> InlineKeyboardMarkup:
+def confirm_kb(suggestion_id: str, token_id: str, side: str, price: float, size: float) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Confirm", callback_data=f"confirm:{suggestion_id}:{market_id}:{side}:{amount_usd}"), InlineKeyboardButton(text="Cancel", callback_data="cancel")]
+            [InlineKeyboardButton(text="Confirm", callback_data=f"confirm:{suggestion_id}:{token_id}:{side}:{price}:{size}"), InlineKeyboardButton(text="Cancel", callback_data="cancel")]
         ]
     )
 

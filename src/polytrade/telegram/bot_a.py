@@ -37,46 +37,43 @@ async def cmd_suggest(message: types.Message) -> None:
     for doc in snap:
         s = doc.to_dict()
         text = suggestion_message(s.get("title", ""), s.get("side", ""), int(s.get("edgeBps", 0)))
-        kb = amount_presets_kb(suggestion_id=doc.id, market_id=s.get("marketId", ""), side=s.get("side", ""))
+        kb = amount_presets_kb(suggestion_id=doc.id, token_id=s.get("tokenId", ""), side=s.get("side", ""))
         await message.answer(text, reply_markup=kb)
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("amt:"))
 async def on_amount_select(callback: types.CallbackQuery) -> None:
-    # amt:<suggestion_id>:<market_id>:<side>:<kind>:<value>
+    # amt:<suggestion_id>:<token_id>:<side>:<kind>:<value>
     parts = (callback.data or "").split(":")
-    _, suggestion_id, market_id, side, kind, value = parts
-    bal = get_current()
-    amount = 0.0
-    if kind == "pct":
-        pct = float(value)
-        amount = max(1.0, bal["available_usd"] * (pct / 100.0))
-    elif kind == "usd":
-        amount = float(value)
+    _, suggestion_id, token_id, side, kind, value = parts
+    size = 1.0
+    if kind == "size":
+        size = float(value)
     else:
-        await callback.message.answer("Send custom USD amount (e.g., 12.5)")
+        await callback.message.answer("Send custom size (tokens)")
         await callback.answer()
         return
-    amount = min(amount, bal["available_usd"])  # cap by balance
+    price = 0.01  # placeholder; fetch best ask/expected price in analyzer/suggestion
     await callback.message.answer(
-        f"Confirm trade?\n{side} on {market_id}\nAmount: ${amount:.2f}",
-        reply_markup=confirm_kb(suggestion_id, market_id, side, amount),
+        f"Confirm trade?\n{side} token {token_id}\nPrice: {price:.3f}\nSize: {size}",
+        reply_markup=confirm_kb(suggestion_id, token_id, side, price, size),
     )
     await callback.answer()
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("confirm:"))
 async def on_confirm(callback: types.CallbackQuery) -> None:
-    # confirm:<suggestion_id>:<market_id>:<side>:<amount>
-    _, suggestion_id, market_id, side, amount = (callback.data or "").split(":")
+    # confirm:<suggestion_id>:<token_id>:<side>:<price>:<size>
+    _, suggestion_id, token_id, side, price, size = (callback.data or "").split(":")
     trade = place_trade(
         suggestion_id=suggestion_id,
-        market_id=market_id,
+        token_id=token_id,
         side=side,
-        amount_usd=float(amount),
+        price=float(price),
+        size=float(size),
         user_chat_id=callback.from_user.id,
     )
-    await callback.message.answer(f"Trade status: {trade['status']} amount=${trade['amountUsd']:.2f}")
+    await callback.message.answer(f"Trade status: {trade['status']} size={trade['size']}")
     await callback.answer()
 
 

@@ -8,15 +8,15 @@ from .firestore import add_doc
 from .polymarket_client import PolymarketClient
 
 
-def place_trade(suggestion_id: str, market_id: str, side: str, amount_usd: float, user_chat_id: int | None) -> dict[str, Any]:
+def place_trade(suggestion_id: str, token_id: str, side: str, price: float, size: float, user_chat_id: int | None) -> dict[str, Any]:
     client = PolymarketClient()
-    order = client.place_order(market_id=market_id, side=side, amount_usd=amount_usd)
+    order = client.place_order(token_id=token_id, side=side, price=price, size=size)
     trade = {
         "suggestionId": suggestion_id,
-        "marketId": market_id,
+        "tokenId": token_id,
         "side": side,
-        "amountUsd": amount_usd,
-        "entryPx": order.get("avg_price", 0.0),
+        "size": size,
+        "entryPx": price,
         "status": "OPEN" if order.get("ok") else "FAILED",
         "pnl": 0.0,
         "slPct": settings.default_sl_pct,
