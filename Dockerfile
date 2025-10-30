@@ -8,15 +8,13 @@ WORKDIR /app
 
 RUN pip install --upgrade pip
 
-COPY pyproject.toml ./
-RUN pip install poetry && poetry config virtualenvs.create false
+COPY pyproject.toml poetry.lock* ./
+RUN pip install poetry && \
+    poetry export -f requirements.txt --output requirements.txt --without-hashes && \
+    pip install -r requirements.txt
 
 COPY src ./src
 COPY README.md ./
 
-RUN poetry install --without dev --no-interaction --no-ansi
-
 ENV PORT=8080
 CMD ["sh", "-c", "uvicorn ${APP_MODULE} --host 0.0.0.0 --port ${PORT}"]
-
-

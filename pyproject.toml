@@ -20,7 +20,7 @@ google-cloud-firestore = "^2.16.0"
 google-auth = "^2.35.0"
 loguru = "^0.7.2"
 python-dotenv = "^1.0.1"
-polymarket = "^1.6.0"
+py-clob-client = "^1.6.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"
