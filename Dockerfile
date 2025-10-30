@@ -14,7 +14,7 @@ RUN pip install poetry && poetry config virtualenvs.create false
 COPY src ./src
 COPY README.md ./
 
-RUN poetry install --no-dev --no-interaction --no-ansi
+RUN poetry install --without dev --no-interaction --no-ansi
 
 ENV PORT=8080
 CMD ["sh", "-c", "uvicorn ${APP_MODULE} --host 0.0.0.0 --port ${PORT}"]
