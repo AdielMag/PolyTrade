@@ -1,0 +1,10 @@
+﻿.env
+__pycache__/
+*.pyc
+.venv/
+.terraform/
+.DS_Store
+.idea/
+.vscode/
+dist/
+build/
