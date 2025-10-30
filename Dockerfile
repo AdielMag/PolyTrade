@@ -9,9 +9,10 @@ WORKDIR /app
 RUN pip install --upgrade pip
 
 COPY pyproject.toml poetry.lock* ./
-RUN pip install poetry && \
-    poetry export -f requirements.txt --output requirements.txt --without-hashes && \
-    pip install -r requirements.txt
+
+# Install project and dependencies using PEP 517 (poetry-core backend)
+# This avoids requiring Poetry inside the image
+RUN pip install --no-cache-dir .
 
 COPY src ./src
 COPY README.md ./
