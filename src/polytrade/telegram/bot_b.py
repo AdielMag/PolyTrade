@@ -8,13 +8,19 @@ from ..balances import get_current
 
 
 app = FastAPI()
-bot = Bot(token=settings.bot_b_token or "")
 dp = Dispatcher()
+
+
+def get_bot() -> Bot:
+    if not settings.bot_b_token:
+        raise RuntimeError("TELEGRAM_BOT_B_TOKEN is not set")
+    return Bot(token=settings.bot_b_token)
 
 
 async def send_notification(chat_id: int, text: str) -> None:
     bal = get_current()
     header = f"Balance: ${bal['available_usd']:.2f}\n"
+    bot = get_bot()
     await bot.send_message(chat_id, header + text)
 
 

@@ -15,8 +15,14 @@ from ..execution import place_trade
 
 
 app = FastAPI()
-bot = Bot(token=settings.bot_a_token or "")
 dp = Dispatcher()
+
+
+def get_bot() -> Bot:
+    if not settings.bot_a_token:
+        # Return a bot with an obviously invalid token is risky; better to raise when used
+        raise RuntimeError("TELEGRAM_BOT_A_TOKEN is not set")
+    return Bot(token=settings.bot_a_token)
 i18n = I18n(path="locales", default_locale="en")
 
 
@@ -81,6 +87,7 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
 async def telegram_webhook(req: Request):
     data = await req.json()
     update = types.Update.model_validate(data)
+    bot = get_bot()
     await dp.feed_update(bot=bot, update=update)
     return {"ok": True}
 
