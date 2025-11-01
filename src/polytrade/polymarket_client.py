@@ -26,9 +26,31 @@ class PolymarketClient:
         self.client.set_api_creds(self.client.create_or_derive_api_creds())
 
     def get_balance(self) -> dict[str, float]:
-        # For balances, prefer Polymarket portfolio endpoint or on-chain USDC.
-        # Placeholder zeros to avoid breaking flow if not configured.
-        return {"available_usd": 0.0, "locked_usd": 0.0}
+        """Get current USDC balance from Polymarket CLOB."""
+        try:
+            # Get balance from CLOB client - returns balance in USDC
+            balance_response = self.client.get_balance()
+            
+            # The response should be a number (float or int) representing USDC balance
+            if isinstance(balance_response, (int, float)):
+                available = float(balance_response)
+            elif isinstance(balance_response, dict):
+                # If it returns a dict, extract the balance field
+                available = float(balance_response.get("balance", 0.0))
+            else:
+                logger.warning(f"Unexpected balance response type: {type(balance_response)}")
+                available = 0.0
+            
+            logger.info(f"Retrieved balance: ${available:.2f}")
+            
+            return {
+                "available_usd": available,
+                "locked_usd": 0.0  # TODO: Add logic for in-orders balance if API provides it
+            }
+        except Exception as e:
+            logger.error(f"Failed to fetch balance from Polymarket: {e}")
+            # Return zeros as fallback to prevent crashes
+            return {"available_usd": 0.0, "locked_usd": 0.0}
 
     def list_markets(self) -> list[dict[str, Any]]:
         # Use Gamma endpoints via public API in a separate client if needed.
