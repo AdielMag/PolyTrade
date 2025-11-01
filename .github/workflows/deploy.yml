@@ -143,7 +143,6 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
-      IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
       CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
       POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
       SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
@@ -161,7 +160,14 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy to Cloud Run
+        env:
+          IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
         run: |
+          echo "📦 Image URI: $IMAGE_URI"
+          if [ -z "$IMAGE_URI" ]; then
+            echo "❌ ERROR: IMAGE_URI is empty!"
+            exit 1
+          fi
           echo "🚀 Deploying Bot A to Cloud Run..."
           gcloud run deploy polytrade-bot-a \
             --project $PROJECT_ID --region $REGION \
@@ -183,7 +189,6 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
-      IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
       CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
       POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
       SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
@@ -202,7 +207,14 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy to Cloud Run
+        env:
+          IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
         run: |
+          echo "📦 Image URI: $IMAGE_URI"
+          if [ -z "$IMAGE_URI" ]; then
+            echo "❌ ERROR: IMAGE_URI is empty!"
+            exit 1
+          fi
           echo "🚀 Deploying Bot B to Cloud Run..."
           gcloud run deploy polytrade-bot-b \
             --project $PROJECT_ID --region $REGION \
@@ -224,7 +236,6 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
-      IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
       CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
       POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
       SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
@@ -241,7 +252,14 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy to Cloud Run
+        env:
+          IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
         run: |
+          echo "📦 Image URI: $IMAGE_URI"
+          if [ -z "$IMAGE_URI" ]; then
+            echo "❌ ERROR: IMAGE_URI is empty!"
+            exit 1
+          fi
           echo "🚀 Deploying Analyzer to Cloud Run..."
           gcloud run deploy polytrade-analyzer \
             --project $PROJECT_ID --region $REGION \
@@ -263,7 +281,6 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
-      IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
       CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
       POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
       SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
@@ -280,7 +297,14 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy to Cloud Run
+        env:
+          IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
         run: |
+          echo "📦 Image URI: $IMAGE_URI"
+          if [ -z "$IMAGE_URI" ]; then
+            echo "❌ ERROR: IMAGE_URI is empty!"
+            exit 1
+          fi
           echo "🚀 Deploying Monitor to Cloud Run..."
           gcloud run deploy polytrade-monitor \
             --project $PROJECT_ID --region $REGION \
