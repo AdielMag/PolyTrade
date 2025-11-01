@@ -12,17 +12,24 @@ from ...shared.polymarket_client import PolymarketClient
 
 def run_monitor() -> dict[str, Any]:
     """Monitor open trades and close positions when SL/TP is hit."""
+    logger.info("=" * 80)
+    logger.info("Starting monitor run")
+    
     client = PolymarketClient()
     db = get_client()
     
     # Get all open trades
+    logger.info("Querying open trades from Firestore...")
     trades_query = db.collection("trades").where("status", "==", "OPEN").limit(50).get()
+    trades_list = list(trades_query)
+    
+    logger.info(f"Found {len(trades_list)} open trades to monitor")
     
     processed = 0
     closed = 0
     errors = 0
     
-    for doc in trades_query:
+    for idx, doc in enumerate(trades_list, 1):
         processed += 1
         trade = doc.to_dict()
         trade_id = doc.id
@@ -36,36 +43,51 @@ def run_monitor() -> dict[str, Any]:
             sl_pct = float(trade.get("slPct", 0.15))
             tp_pct = float(trade.get("tpPct", 0.25))
             user_chat_id = trade.get("userChatId")
+            market_title = trade.get("title", "Unknown Market")
+            
+            logger.info(f"[{idx}/{len(trades_list)}] Checking trade: {trade_id}")
+            logger.info(f"  Market: {market_title[:60]}")
+            logger.info(f"  Side: {side} | Size: {size} | Entry: ${entry_price:.4f}")
+            logger.info(f"  SL: {sl_pct:.1%} | TP: {tp_pct:.1%}")
             
             # Get current market price
+            logger.debug(f"  Fetching quotes for token {token_id}...")
             quotes = client.get_quotes(token_id)
+            logger.debug(f"  Got quotes: bid={quotes.get('best_bid')}, ask={quotes.get('best_ask')}")
             
             # Determine current price based on position side
             if side.upper().startswith("BUY"):
                 current_price = quotes["best_bid"]  # Can sell at bid
                 opposite_side = "SELL"
+                logger.debug(f"  Position: LONG (BUY), exit at bid=${current_price:.4f}")
             else:
                 current_price = quotes["best_ask"]  # Can buy at ask
                 opposite_side = "BUY"
+                logger.debug(f"  Position: SHORT (SELL), exit at ask=${current_price:.4f}")
             
             if current_price <= 0 or entry_price <= 0:
+                logger.warning(f"  ⚠️ Invalid prices: current=${current_price}, entry=${entry_price}, skipping")
                 continue
             
             # Calculate P&L percentage
             pnl_pct = (current_price - entry_price) / entry_price
             pnl_usd = pnl_pct * (size * entry_price)
             
+            logger.info(f"  💰 P&L: ${pnl_usd:+.2f} ({pnl_pct:+.2%})")
+            logger.info(f"  📊 Current: ${current_price:.4f} vs Entry: ${entry_price:.4f}")
+            
             # Check stop loss
             if pnl_pct <= -sl_pct:
-                logger.info(f"Stop loss hit for trade {trade_id}: {pnl_pct:.2%}")
+                logger.warning(f"  🛑 STOP LOSS TRIGGERED: {pnl_pct:.2%} <= -{sl_pct:.1%}")
                 close_reason = "STOP_LOSS"
                 should_close = True
             # Check take profit
             elif pnl_pct >= tp_pct:
-                logger.info(f"Take profit hit for trade {trade_id}: {pnl_pct:.2%}")
+                logger.info(f"  🎯 TAKE PROFIT TRIGGERED: {pnl_pct:.2%} >= {tp_pct:.1%}")
                 close_reason = "TAKE_PROFIT"
                 should_close = True
             else:
+                logger.debug(f"  ✅ Position within limits (SL: -{sl_pct:.1%}, TP: +{tp_pct:.1%})")
                 should_close = False
             
             if should_close:
@@ -135,12 +157,25 @@ def await_send_notification(chat_id: int, trade_id: str, reason: str, pnl_usd: f
         import asyncio
         from ..bot_b.app import send_notification
         
-        pnl_emoji = "✅" if pnl_usd >= 0 else "❌"
+        # Choose emojis based on reason and profit
+        if reason == "TAKE_PROFIT":
+            status_emoji = "🎉"
+            reason_text = "Take Profit Hit!"
+        elif reason == "STOP_LOSS":
+            status_emoji = "🛑"
+            reason_text = "Stop Loss Hit"
+        else:
+            status_emoji = "🔔"
+            reason_text = "Trade Closed"
+            
+        pnl_emoji = "💰" if pnl_usd >= 0 else "📉"
+        pnl_color = "+" if pnl_usd >= 0 else ""
+        
         message = (
-            f"{pnl_emoji} Trade Closed: {reason}\n\n"
-            f"Market: {title}\n"
-            f"P&L: ${pnl_usd:.2f} ({pnl_pct:+.2%})\n"
-            f"Trade ID: {trade_id}"
+            f"{status_emoji} <b>{reason_text}</b>\n\n"
+            f"🎯 <b>{title}</b>\n\n"
+            f"{pnl_emoji} <b>P&L: {pnl_color}${pnl_usd:.2f}</b> ({pnl_pct:+.2%})\n\n"
+            f"🆔 Trade ID: <code>{trade_id}</code>"
         )
         
         # Run async notification in event loop

@@ -10,6 +10,7 @@ from .polymarket_client import PolymarketClient
 class Balance(TypedDict):
     available_usd: float
     locked_usd: float
+    total_usd: float
     updated_at: int
 
 
@@ -25,6 +26,7 @@ def get_current(force: bool = False) -> Balance:
             return Balance(
                 available_usd=float(cached.get("available_usd", 0.0)),
                 locked_usd=float(cached.get("locked_usd", 0.0)),
+                total_usd=float(cached.get("total_usd", 0.0)),
                 updated_at=int(cached.get("updated_at", 0)),
             )
 
@@ -34,6 +36,7 @@ def get_current(force: bool = False) -> Balance:
         balance = Balance(
             available_usd=float(raw.get("available_usd", 0.0)),
             locked_usd=float(raw.get("locked_usd", 0.0)),
+            total_usd=float(raw.get("total_usd", 0.0)),
             updated_at=now,
         )
         set_doc(_CACHE_DOC[0], _CACHE_DOC[1], balance)  # store cache
@@ -45,8 +48,9 @@ def get_current(force: bool = False) -> Balance:
             return Balance(
                 available_usd=float(cached.get("available_usd", 0.0)),
                 locked_usd=float(cached.get("locked_usd", 0.0)),
+                total_usd=float(cached.get("total_usd", 0.0)),
                 updated_at=int(cached.get("updated_at", 0)),
             )
         # Return zeros if no cache available
-        return Balance(available_usd=0.0, locked_usd=0.0, updated_at=now)
+        return Balance(available_usd=0.0, locked_usd=0.0, total_usd=0.0, updated_at=now)
 

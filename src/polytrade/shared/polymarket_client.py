@@ -26,7 +26,7 @@ class PolymarketClient:
         self.client.set_api_creds(self.client.create_or_derive_api_creds())
 
     def get_balance(self) -> dict[str, float]:
-        """Get current USDC balance from Polymarket CLOB."""
+        """Get current USDC balance and portfolio value from Polymarket CLOB."""
         try:
             # Get balance allowance from CLOB client for COLLATERAL (USDC)
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
@@ -34,25 +34,50 @@ class PolymarketClient:
             
             # The response should be a dict with balance and allowance fields
             if isinstance(balance_response, dict):
-                # Extract the balance field - this is the USDC balance
-                available = float(balance_response.get("balance", 0.0))
+                # Extract the balance field - this is in the smallest unit (6 decimals for USDC)
+                raw_balance = float(balance_response.get("balance", 0.0))
             elif isinstance(balance_response, (int, float)):
                 # Fallback if it returns a number
-                available = float(balance_response)
+                raw_balance = float(balance_response)
             else:
                 logger.warning(f"Unexpected balance response type: {type(balance_response)}")
-                available = 0.0
+                raw_balance = 0.0
             
-            logger.info(f"Retrieved balance: ${available:.2f}")
+            # Convert from smallest unit to USD (USDC has 6 decimal places)
+            available_usd = raw_balance / 1_000_000
+            
+            # Get open orders to calculate locked funds
+            locked_usd = 0.0
+            try:
+                orders = self.client.get_orders()
+                
+                if isinstance(orders, list):
+                    for order in orders:
+                        # Each order has size and price fields
+                        # Locked value = size * price (for buy orders, this is the USDC locked)
+                        size = float(order.get("size", 0.0))
+                        price = float(order.get("price", 0.0))
+                        locked_usd += size * price
+                        
+                logger.debug(f"Calculated locked funds from {len(orders) if isinstance(orders, list) else 0} open orders")
+            except Exception as e:
+                logger.warning(f"Could not fetch open orders for locked balance: {e}")
+                locked_usd = 0.0
+            
+            # Total portfolio value = available + locked in orders
+            total_usd = available_usd + locked_usd
+            
+            logger.info(f"Balance - Available: ${available_usd:.2f}, Locked: ${locked_usd:.2f}, Total: ${total_usd:.2f}")
             
             return {
-                "available_usd": available,
-                "locked_usd": 0.0  # TODO: Add logic for in-orders balance if API provides it
+                "available_usd": available_usd,
+                "locked_usd": locked_usd,
+                "total_usd": total_usd
             }
         except Exception as e:
             logger.error(f"Failed to fetch balance from Polymarket: {e}")
             # Return zeros as fallback to prevent crashes
-            return {"available_usd": 0.0, "locked_usd": 0.0}
+            return {"available_usd": 0.0, "locked_usd": 0.0, "total_usd": 0.0}
 
     def list_markets(self) -> list[dict[str, Any]]:
         """Fetch active sports markets from Polymarket Gamma API."""

@@ -6,8 +6,12 @@ def amount_presets_kb(suggestion_id: str, token_id: str, side: str) -> InlineKey
         return InlineKeyboardButton(text=text, callback_data=data)
 
     rows = [
-        [btn("Size 1", f"amt:{suggestion_id}:{token_id}:{side}:size:1"), btn("Size 5", f"amt:{suggestion_id}:{token_id}:{side}:size:5"), btn("Size 10", f"amt:{suggestion_id}:{token_id}:{side}:size:10")],
-        [btn("Custom", f"amt:{suggestion_id}:{token_id}:{side}:custom:0")],
+        [
+            btn("💵 $1", f"amt:{suggestion_id}:{token_id}:{side}:size:1"), 
+            btn("💰 $5", f"amt:{suggestion_id}:{token_id}:{side}:size:5"), 
+            btn("💎 $10", f"amt:{suggestion_id}:{token_id}:{side}:size:10")
+        ],
+        [btn("✏️ Custom Amount", f"amt:{suggestion_id}:{token_id}:{side}:custom:0")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -15,7 +19,10 @@ def amount_presets_kb(suggestion_id: str, token_id: str, side: str) -> InlineKey
 def confirm_kb(suggestion_id: str, token_id: str, side: str, price: float, size: float) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Confirm", callback_data=f"confirm:{suggestion_id}:{token_id}:{side}:{price}:{size}"), InlineKeyboardButton(text="Cancel", callback_data="cancel")]
+            [
+                InlineKeyboardButton(text="✅ Confirm Trade", callback_data=f"confirm:{suggestion_id}:{token_id}:{side}:{price}:{size}"), 
+                InlineKeyboardButton(text="❌ Cancel", callback_data="cancel")
+            ]
         ]
     )
 
