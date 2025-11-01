@@ -112,10 +112,23 @@ class PolymarketClient:
                 
                 # Get wallet address from the client
                 wallet_address = self.client.get_address()
-                logger.info(f"✅ Wallet address from client: {wallet_address}")
+                logger.info(f"✅ Wallet address from client.get_address(): {wallet_address}")
                 
-                positions_url = f"https://data-api.polymarket.com/positions?user={wallet_address}"
+                # For Polymarket, we might need to use the proxy/funder address instead
+                # Try proxy address if configured
+                proxy_address = settings.proxy_address if settings.proxy_address else None
+                if proxy_address:
+                    logger.info(f"ℹ️  Also have proxy address from settings: {proxy_address}")
+                    logger.info(f"ℹ️  Trying proxy address first (Polymarket uses proxy wallets)")
+                    query_address = proxy_address
+                else:
+                    logger.info(f"ℹ️  No proxy address configured, using wallet address")
+                    query_address = wallet_address
+                
+                # IMPORTANT: sizeThreshold defaults to 1.0, set to 0 to get all positions
+                positions_url = f"https://data-api.polymarket.com/positions?user={query_address}&sizeThreshold=0"
                 logger.info(f"📡 API URL: {positions_url}")
+                logger.info(f"ℹ️  Using sizeThreshold=0 to include all positions (default is 1.0)")
                 
                 logger.debug("Making HTTP GET request...")
                 pos_response = httpx.get(positions_url, timeout=30.0)
@@ -126,6 +139,20 @@ class PolymarketClient:
                 
                 logger.info(f"📦 Received response with {len(positions) if isinstance(positions, list) else 'unknown'} items")
                 logger.info(f"Response type: {type(positions)}")
+                
+                # If we got 0 positions with proxy address, try with wallet address
+                if (not positions or len(positions) == 0) and proxy_address and query_address == proxy_address:
+                    logger.warning("⚠️ Got 0 positions with proxy address, trying wallet address...")
+                    fallback_url = f"https://data-api.polymarket.com/positions?user={wallet_address}&sizeThreshold=0"
+                    logger.info(f"📡 Fallback API URL: {fallback_url}")
+                    
+                    pos_response = httpx.get(fallback_url, timeout=30.0)
+                    logger.info(f"✅ Fallback response status code: {pos_response.status_code}")
+                    pos_response.raise_for_status()
+                    positions = pos_response.json()
+                    
+                    logger.info(f"📦 Fallback received {len(positions) if isinstance(positions, list) else 'unknown'} items")
+                    query_address = wallet_address  # Update for logging
                 
                 # Log first position structure if available
                 if positions and isinstance(positions, list) and len(positions) > 0:
