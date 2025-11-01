@@ -125,12 +125,18 @@ jobs:
           REPO_LC="${REPO,,}"
           IMAGE_LC="${IMAGE,,}"
           IMAGE_URI_COMPUTED="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_LC/$IMAGE_LC:${GITHUB_SHA}"
+          
+          echo "🔍 DEBUG: Setting output image_uri=$IMAGE_URI_COMPUTED"
           echo "image_uri=$IMAGE_URI_COMPUTED" >> $GITHUB_OUTPUT
+          
           echo "🐳 Building image: $IMAGE_URI_COMPUTED"
           docker build -t "$IMAGE_URI_COMPUTED" .
           echo "📤 Pushing image to Artifact Registry..."
           docker push "$IMAGE_URI_COMPUTED"
           echo "✅ Image pushed successfully"
+          
+          echo "🔍 DEBUG: Verifying GITHUB_OUTPUT file contents:"
+          cat $GITHUB_OUTPUT
 
   deploy-bot-a:
     name: Deploy Bot A
@@ -163,9 +169,13 @@ jobs:
         env:
           IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
         run: |
+          echo "🔍 DEBUG: Raw output from build-image job: '${{ needs.build-image.outputs.image_uri }}'"
+          echo "🔍 DEBUG: IMAGE_URI env var: '$IMAGE_URI'"
           echo "📦 Image URI: $IMAGE_URI"
           if [ -z "$IMAGE_URI" ]; then
             echo "❌ ERROR: IMAGE_URI is empty!"
+            echo "🔍 Available outputs from build-image job:"
+            echo "${{ toJSON(needs.build-image.outputs) }}"
             exit 1
           fi
           echo "🚀 Deploying Bot A to Cloud Run..."

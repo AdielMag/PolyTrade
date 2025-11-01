@@ -159,7 +159,7 @@ class PolymarketClient:
             response.raise_for_status()
             markets = response.json()
             
-            logger.info(f"✅ Fetched {len(markets)} sports markets from Gamma API")
+            logger.info(f"✅ Fetched {len(markets)} sports markets from Gamma API ")
             
             # Log structure of first market to understand the schema
             if markets and isinstance(markets, list) and len(markets) > 0:
