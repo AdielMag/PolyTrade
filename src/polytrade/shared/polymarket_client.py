@@ -27,47 +27,101 @@ class PolymarketClient:
 
     def get_balance(self) -> dict[str, float]:
         """Get current USDC balance and portfolio value from Polymarket CLOB."""
+        logger.info("=" * 80)
+        logger.info("Fetching balance and portfolio value from Polymarket...")
         try:
             # Get balance allowance from CLOB client for COLLATERAL (USDC)
+            logger.debug("Creating BalanceAllowanceParams with AssetType.COLLATERAL")
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            
+            logger.debug("Calling get_balance_allowance()...")
             balance_response = self.client.get_balance_allowance(params)
+            logger.debug(f"get_balance_allowance() response type: {type(balance_response)}")
+            logger.debug(f"get_balance_allowance() response: {balance_response}")
             
             # The response should be a dict with balance and allowance fields
             if isinstance(balance_response, dict):
                 # Extract the balance field - this is in the smallest unit (6 decimals for USDC)
                 raw_balance = float(balance_response.get("balance", 0.0))
+                logger.debug(f"Extracted balance from dict: {raw_balance}")
             elif isinstance(balance_response, (int, float)):
                 # Fallback if it returns a number
                 raw_balance = float(balance_response)
+                logger.debug(f"Balance is a number: {raw_balance}")
             else:
                 logger.warning(f"Unexpected balance response type: {type(balance_response)}")
                 raw_balance = 0.0
             
             # Convert from smallest unit to USD (USDC has 6 decimal places)
             available_usd = raw_balance / 1_000_000
+            logger.info(f"Converted raw balance {raw_balance} microUSDC -> ${available_usd:.2f} USD")
             
             # Get open orders to calculate locked funds
             locked_usd = 0.0
             try:
-                orders = self.client.get_orders()
+                logger.debug("Fetching open orders to calculate locked funds...")
+                orders_response = self.client.get_orders()
                 
-                if isinstance(orders, list):
-                    for order in orders:
-                        # Each order has size and price fields
-                        # Locked value = size * price (for buy orders, this is the USDC locked)
-                        size = float(order.get("size", 0.0))
-                        price = float(order.get("price", 0.0))
-                        locked_usd += size * price
-                        
-                logger.debug(f"Calculated locked funds from {len(orders) if isinstance(orders, list) else 0} open orders")
+                logger.debug(f"get_orders() response type: {type(orders_response)}")
+                logger.debug(f"get_orders() response: {orders_response}")
+                
+                # Handle different response formats
+                orders = []
+                if isinstance(orders_response, dict):
+                    # Response might be paginated: {"data": [...], "next_cursor": "..."}
+                    if "data" in orders_response:
+                        orders = orders_response.get("data", [])
+                        logger.debug(f"Extracted {len(orders)} orders from 'data' field")
+                    else:
+                        # Response might be a single order dict
+                        orders = [orders_response]
+                        logger.debug("Response is a single order dict")
+                elif isinstance(orders_response, list):
+                    orders = orders_response
+                    logger.debug(f"Response is a list with {len(orders)} orders")
+                else:
+                    logger.warning(f"Unexpected orders response type: {type(orders_response)}")
+                
+                if orders:
+                    logger.info(f"Processing {len(orders)} open orders to calculate locked funds")
+                    for i, order in enumerate(orders):
+                        try:
+                            # Each order has size and price fields
+                            size = float(order.get("size", 0.0))
+                            price = float(order.get("price", 0.0))
+                            order_value = size * price
+                            locked_usd += order_value
+                            
+                            logger.debug(
+                                f"  Order {i+1}: size={size}, price={price:.4f}, "
+                                f"value=${order_value:.2f}, "
+                                f"side={order.get('side', 'N/A')}, "
+                                f"status={order.get('status', 'N/A')}"
+                            )
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"  Order {i+1}: Could not parse order data: {e}")
+                            continue
+                    
+                    logger.info(f"Total locked in {len(orders)} orders: ${locked_usd:.2f}")
+                else:
+                    logger.info("No open orders found - all funds available")
+                    
             except Exception as e:
-                logger.warning(f"Could not fetch open orders for locked balance: {e}")
+                logger.error(f"Failed to fetch open orders for locked balance: {e}")
+                logger.error(f"Exception type: {type(e).__name__}")
+                import traceback
+                logger.debug(f"Traceback: {traceback.format_exc()}")
                 locked_usd = 0.0
             
             # Total portfolio value = available + locked in orders
             total_usd = available_usd + locked_usd
             
-            logger.info(f"Balance - Available: ${available_usd:.2f}, Locked: ${locked_usd:.2f}, Total: ${total_usd:.2f}")
+            logger.info("=" * 80)
+            logger.info("BALANCE SUMMARY:")
+            logger.info(f"  💰 Available: ${available_usd:.2f}")
+            logger.info(f"  🔒 Locked:    ${locked_usd:.2f}")
+            logger.info(f"  📊 Total:     ${total_usd:.2f}")
+            logger.info("=" * 80)
             
             return {
                 "available_usd": available_usd,
@@ -75,7 +129,12 @@ class PolymarketClient:
                 "total_usd": total_usd
             }
         except Exception as e:
-            logger.error(f"Failed to fetch balance from Polymarket: {e}")
+            logger.error("=" * 80)
+            logger.error(f"❌ FAILED to fetch balance from Polymarket: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error("=" * 80)
             # Return zeros as fallback to prevent crashes
             return {"available_usd": 0.0, "locked_usd": 0.0, "total_usd": 0.0}
 
@@ -93,15 +152,60 @@ class PolymarketClient:
                 "limit": 100
             }
             
+            logger.info(f"Fetching markets from Gamma API: {url}")
+            logger.debug(f"Request params: {params}")
+            
             response = httpx.get(url, params=params, timeout=30.0)
             response.raise_for_status()
             markets = response.json()
             
-            logger.info(f"Fetched {len(markets)} sports markets from Gamma API")
+            logger.info(f"✅ Fetched {len(markets)} sports markets from Gamma API")
+            
+            # Log structure of first market to understand the schema
+            if markets and isinstance(markets, list) and len(markets) > 0:
+                first_market = markets[0]
+                logger.debug("=" * 80)
+                logger.debug("FIRST MARKET STRUCTURE:")
+                logger.debug(f"  Keys: {list(first_market.keys())}")
+                logger.debug(f"  Question: {first_market.get('question', 'N/A')[:80]}")
+                logger.debug(f"  Has 'tokens' field: {'tokens' in first_market}")
+                
+                if 'tokens' in first_market:
+                    tokens = first_market.get('tokens', [])
+                    logger.debug(f"  Tokens count: {len(tokens)}")
+                    if tokens:
+                        logger.debug(f"  First token keys: {list(tokens[0].keys()) if tokens else 'N/A'}")
+                else:
+                    # Check for alternative field names
+                    logger.debug(f"  ⚠️ No 'tokens' field found. Checking alternatives...")
+                    potential_fields = ['outcomes', 'markets', 'options', 'sides', 'clobTokenIds']
+                    for field in potential_fields:
+                        if field in first_market:
+                            logger.debug(f"  Found alternative field '{field}': {type(first_market[field])}")
+                            if isinstance(first_market[field], list) and first_market[field]:
+                                logger.debug(f"    First item: {first_market[field][0]}")
+                
+                # Log full first market for debugging (truncated)
+                import json
+                market_json = json.dumps(first_market, indent=2)
+                if len(market_json) > 1000:
+                    market_json = market_json[:1000] + "\n... (truncated)"
+                logger.debug(f"  Full first market:\n{market_json}")
+                logger.debug("=" * 80)
+                
+                # Count how many markets have tokens
+                with_tokens = sum(1 for m in markets if m.get('tokens'))
+                without_tokens = len(markets) - with_tokens
+                logger.info(f"  Markets with 'tokens' field: {with_tokens}")
+                logger.info(f"  Markets WITHOUT 'tokens' field: {without_tokens}")
+            
             return markets if isinstance(markets, list) else []
             
         except Exception as e:
-            logger.error(f"Failed to fetch markets from Gamma API: {e}")
+            logger.error(f"❌ Failed to fetch markets from Gamma API: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             return []
 
     def get_quotes(self, token_id: str) -> dict[str, Any]:

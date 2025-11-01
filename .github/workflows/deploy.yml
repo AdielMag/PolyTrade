@@ -4,33 +4,19 @@ on:
     branches: [ master ]
 
 jobs:
-  deploy:
+  detect-changes:
+    name: Detect Changed Services
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      REGION: ${{ secrets.GCP_REGION }}
-      REPO: ${{ secrets.GAR_REPOSITORY }}
-      IMAGE: ${{ secrets.IMAGE_NAME }}
-      IMAGE_URI: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/${{ secrets.IMAGE_NAME }}:${{ github.sha }}
-      # Runtime configuration (from GitHub Environments/Variables)
-      CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
-      POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
-      SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
-      CHAIN_ID: ${{ vars.CHAIN_ID || '137' }}
-      EDGE_BPS: ${{ vars.EDGE_BPS || '50' }}
-      MIN_LIQUIDITY_USD: ${{ vars.MIN_LIQUIDITY_USD || '1000' }}
-      DEFAULT_SL_PCT: ${{ vars.DEFAULT_SL_PCT || '0.15' }}
-      DEFAULT_TP_PCT: ${{ vars.DEFAULT_TP_PCT || '0.25' }}
-      BOT_B_DEFAULT_CHAT_ID: ${{ vars.BOT_B_DEFAULT_CHAT_ID }}
-      TELEGRAM_BOT_A_WEBHOOK_URL: ${{ vars.TELEGRAM_BOT_A_WEBHOOK_URL }}
-      TELEGRAM_BOT_B_WEBHOOK_URL: ${{ vars.TELEGRAM_BOT_B_WEBHOOK_URL }}
+    outputs:
+      deploy_bot_a: ${{ steps.changes.outputs.deploy_bot_a }}
+      deploy_bot_b: ${{ steps.changes.outputs.deploy_bot_b }}
+      deploy_analyzer: ${{ steps.changes.outputs.deploy_analyzer }}
+      deploy_monitor: ${{ steps.changes.outputs.deploy_monitor }}
+      needs_deployment: ${{ steps.changes.outputs.needs_deployment }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # Need at least 2 commits to detect changes
+          fetch-depth: 2
 
       - name: Detect changed directories
         id: changes
@@ -48,7 +34,7 @@ jobs:
           
           # Check if shared directory changed -> deploy all services
           if echo "$CHANGED_FILES" | grep -q "^src/polytrade/shared/"; then
-            echo "Shared code changed - deploying all services"
+            echo "✅ Shared code changed - deploying all services"
             DEPLOY_BOT_A=true
             DEPLOY_BOT_B=true
             DEPLOY_ANALYZER=true
@@ -57,30 +43,30 @@ jobs:
           
           # Check service-specific changes
           if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/bot_a/"; then
-            echo "Bot A code changed"
+            echo "✅ Bot A code changed"
             DEPLOY_BOT_A=true
           fi
           
           if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/bot_b/"; then
-            echo "Bot B code changed"
+            echo "✅ Bot B code changed"
             DEPLOY_BOT_B=true
             # Monitor depends on Bot B, so deploy it too
             DEPLOY_MONITOR=true
           fi
           
           if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/analyzer/"; then
-            echo "Analyzer code changed"
+            echo "✅ Analyzer code changed"
             DEPLOY_ANALYZER=true
           fi
           
           if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/monitor/"; then
-            echo "Monitor code changed"
+            echo "✅ Monitor code changed"
             DEPLOY_MONITOR=true
           fi
           
           # Check if Dockerfile or dependencies changed -> deploy all
           if echo "$CHANGED_FILES" | grep -qE "^(Dockerfile|pyproject.toml|poetry.lock)"; then
-            echo "Docker or dependencies changed - deploying all services"
+            echo "✅ Docker or dependencies changed - deploying all services"
             DEPLOY_BOT_A=true
             DEPLOY_BOT_B=true
             DEPLOY_ANALYZER=true
@@ -96,73 +82,211 @@ jobs:
           # Check if any service needs deployment
           if [ "$DEPLOY_BOT_A" = "true" ] || [ "$DEPLOY_BOT_B" = "true" ] || [ "$DEPLOY_ANALYZER" = "true" ] || [ "$DEPLOY_MONITOR" = "true" ]; then
             echo "needs_deployment=true" >> $GITHUB_OUTPUT
+            echo "📦 Services to deploy:"
+            [ "$DEPLOY_BOT_A" = "true" ] && echo "  - Bot A"
+            [ "$DEPLOY_BOT_B" = "true" ] && echo "  - Bot B"
+            [ "$DEPLOY_ANALYZER" = "true" ] && echo "  - Analyzer"
+            [ "$DEPLOY_MONITOR" = "true" ] && echo "  - Monitor"
           else
             echo "needs_deployment=false" >> $GITHUB_OUTPUT
-            echo "No services need deployment"
+            echo "⏭️  No services need deployment"
           fi
 
+  build-image:
+    name: Build Docker Image
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs_deployment == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_uri: ${{ steps.build.outputs.image_uri }}
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ secrets.GCP_REGION }}
+      REPO: ${{ secrets.GAR_REPOSITORY }}
+      IMAGE: ${{ secrets.IMAGE_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: google-github-actions/auth@v2
-        if: steps.changes.outputs.needs_deployment == 'true'
         with:
           credentials_json: ${{ secrets.CLOUD_RUN_SA_KEY }}
 
       - uses: google-github-actions/setup-gcloud@v2
-        if: steps.changes.outputs.needs_deployment == 'true'
 
       - name: Configure Docker auth for Artifact Registry
-        if: steps.changes.outputs.needs_deployment == 'true'
         run: gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
 
-      - name: Build and push image (lowercase repo/image)
-        if: steps.changes.outputs.needs_deployment == 'true'
+      - name: Build and push image
+        id: build
         run: |
           REPO_LC="${REPO,,}"
           IMAGE_LC="${IMAGE,,}"
           IMAGE_URI_COMPUTED="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_LC/$IMAGE_LC:${GITHUB_SHA}"
-          echo "IMAGE_URI_COMPUTED=$IMAGE_URI_COMPUTED" >> $GITHUB_ENV
+          echo "image_uri=$IMAGE_URI_COMPUTED" >> $GITHUB_OUTPUT
+          echo "🐳 Building image: $IMAGE_URI_COMPUTED"
           docker build -t "$IMAGE_URI_COMPUTED" .
+          echo "📤 Pushing image to Artifact Registry..."
           docker push "$IMAGE_URI_COMPUTED"
+          echo "✅ Image pushed successfully"
 
-      - name: Deploy Bot A
-        if: steps.changes.outputs.deploy_bot_a == 'true'
+  deploy-bot-a:
+    name: Deploy Bot A
+    needs: [detect-changes, build-image]
+    if: needs.detect-changes.outputs.deploy_bot_a == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ secrets.GCP_REGION }}
+      IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
+      CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
+      POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
+      SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
+      CHAIN_ID: ${{ vars.CHAIN_ID || '137' }}
+      EDGE_BPS: ${{ vars.EDGE_BPS || '50' }}
+      MIN_LIQUIDITY_USD: ${{ vars.MIN_LIQUIDITY_USD || '1000' }}
+      DEFAULT_SL_PCT: ${{ vars.DEFAULT_SL_PCT || '0.15' }}
+      DEFAULT_TP_PCT: ${{ vars.DEFAULT_TP_PCT || '0.25' }}
+      TELEGRAM_BOT_A_WEBHOOK_URL: ${{ vars.TELEGRAM_BOT_A_WEBHOOK_URL }}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.CLOUD_RUN_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
         run: |
+          echo "🚀 Deploying Bot A to Cloud Run..."
           gcloud run deploy polytrade-bot-a \
             --project $PROJECT_ID --region $REGION \
-            --image "$IMAGE_URI_COMPUTED" \
+            --image "$IMAGE_URI" \
             --platform managed \
             --allow-unauthenticated \
             --update-env-vars APP_MODULE=polytrade.services.bot_a.app:app,GCP_PROJECT_ID=$PROJECT_ID,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=$POLYMARKET_PROXY_ADDRESS,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,EDGE_BPS=$EDGE_BPS,MIN_LIQUIDITY_USD=$MIN_LIQUIDITY_USD,DEFAULT_SL_PCT=$DEFAULT_SL_PCT,DEFAULT_TP_PCT=$DEFAULT_TP_PCT,TELEGRAM_BOT_A_WEBHOOK_URL=$TELEGRAM_BOT_A_WEBHOOK_URL \
             --set-secrets WALLET_PRIVATE_KEY=WALLET_PRIVATE_KEY:latest,TELEGRAM_BOT_A_TOKEN=TELEGRAM_BOT_A_TOKEN:latest
+          echo "✅ Bot A deployed successfully"
 
-      - name: Deploy Bot B
-        if: steps.changes.outputs.deploy_bot_b == 'true'
+  deploy-bot-b:
+    name: Deploy Bot B
+    needs: [detect-changes, build-image]
+    if: needs.detect-changes.outputs.deploy_bot_b == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ secrets.GCP_REGION }}
+      IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
+      CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
+      POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
+      SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
+      CHAIN_ID: ${{ vars.CHAIN_ID || '137' }}
+      EDGE_BPS: ${{ vars.EDGE_BPS || '50' }}
+      MIN_LIQUIDITY_USD: ${{ vars.MIN_LIQUIDITY_USD || '1000' }}
+      DEFAULT_SL_PCT: ${{ vars.DEFAULT_SL_PCT || '0.15' }}
+      DEFAULT_TP_PCT: ${{ vars.DEFAULT_TP_PCT || '0.25' }}
+      BOT_B_DEFAULT_CHAT_ID: ${{ vars.BOT_B_DEFAULT_CHAT_ID }}
+      TELEGRAM_BOT_B_WEBHOOK_URL: ${{ vars.TELEGRAM_BOT_B_WEBHOOK_URL }}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.CLOUD_RUN_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
         run: |
+          echo "🚀 Deploying Bot B to Cloud Run..."
           gcloud run deploy polytrade-bot-b \
             --project $PROJECT_ID --region $REGION \
-            --image "$IMAGE_URI_COMPUTED" \
+            --image "$IMAGE_URI" \
             --platform managed \
             --allow-unauthenticated \
             --update-env-vars APP_MODULE=polytrade.services.bot_b.app:app,GCP_PROJECT_ID=$PROJECT_ID,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=$POLYMARKET_PROXY_ADDRESS,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,EDGE_BPS=$EDGE_BPS,MIN_LIQUIDITY_USD=$MIN_LIQUIDITY_USD,DEFAULT_SL_PCT=$DEFAULT_SL_PCT,DEFAULT_TP_PCT=$DEFAULT_TP_PCT,BOT_B_DEFAULT_CHAT_ID=$BOT_B_DEFAULT_CHAT_ID,TELEGRAM_BOT_B_WEBHOOK_URL=$TELEGRAM_BOT_B_WEBHOOK_URL \
             --set-secrets WALLET_PRIVATE_KEY=WALLET_PRIVATE_KEY:latest,TELEGRAM_BOT_B_TOKEN=TELEGRAM_BOT_B_TOKEN:latest
+          echo "✅ Bot B deployed successfully"
 
-      - name: Deploy Analyzer
-        if: steps.changes.outputs.deploy_analyzer == 'true'
+  deploy-analyzer:
+    name: Deploy Analyzer
+    needs: [detect-changes, build-image]
+    if: needs.detect-changes.outputs.deploy_analyzer == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ secrets.GCP_REGION }}
+      IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
+      CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
+      POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
+      SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
+      CHAIN_ID: ${{ vars.CHAIN_ID || '137' }}
+      EDGE_BPS: ${{ vars.EDGE_BPS || '50' }}
+      MIN_LIQUIDITY_USD: ${{ vars.MIN_LIQUIDITY_USD || '1000' }}
+      DEFAULT_SL_PCT: ${{ vars.DEFAULT_SL_PCT || '0.15' }}
+      DEFAULT_TP_PCT: ${{ vars.DEFAULT_TP_PCT || '0.25' }}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.CLOUD_RUN_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
         run: |
+          echo "🚀 Deploying Analyzer to Cloud Run..."
           gcloud run deploy polytrade-analyzer \
             --project $PROJECT_ID --region $REGION \
-            --image "$IMAGE_URI_COMPUTED" \
+            --image "$IMAGE_URI" \
             --platform managed \
             --allow-unauthenticated \
             --update-env-vars APP_MODULE=polytrade.services.analyzer.app:app,GCP_PROJECT_ID=$PROJECT_ID,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=$POLYMARKET_PROXY_ADDRESS,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,EDGE_BPS=$EDGE_BPS,MIN_LIQUIDITY_USD=$MIN_LIQUIDITY_USD,DEFAULT_SL_PCT=$DEFAULT_SL_PCT,DEFAULT_TP_PCT=$DEFAULT_TP_PCT \
             --set-secrets WALLET_PRIVATE_KEY=WALLET_PRIVATE_KEY:latest
+          echo "✅ Analyzer deployed successfully"
 
-      - name: Deploy Monitor
-        if: steps.changes.outputs.deploy_monitor == 'true'
+  deploy-monitor:
+    name: Deploy Monitor
+    needs: [detect-changes, build-image]
+    if: needs.detect-changes.outputs.deploy_monitor == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ secrets.GCP_REGION }}
+      IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
+      CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
+      POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
+      SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
+      CHAIN_ID: ${{ vars.CHAIN_ID || '137' }}
+      EDGE_BPS: ${{ vars.EDGE_BPS || '50' }}
+      MIN_LIQUIDITY_USD: ${{ vars.MIN_LIQUIDITY_USD || '1000' }}
+      DEFAULT_SL_PCT: ${{ vars.DEFAULT_SL_PCT || '0.15' }}
+      DEFAULT_TP_PCT: ${{ vars.DEFAULT_TP_PCT || '0.25' }}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.CLOUD_RUN_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
         run: |
+          echo "🚀 Deploying Monitor to Cloud Run..."
           gcloud run deploy polytrade-monitor \
             --project $PROJECT_ID --region $REGION \
-            --image "$IMAGE_URI_COMPUTED" \
+            --image "$IMAGE_URI" \
             --platform managed \
             --allow-unauthenticated \
             --update-env-vars APP_MODULE=polytrade.services.monitor.app:app,GCP_PROJECT_ID=$PROJECT_ID,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=$POLYMARKET_PROXY_ADDRESS,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,EDGE_BPS=$EDGE_BPS,MIN_LIQUIDITY_USD=$MIN_LIQUIDITY_USD,DEFAULT_SL_PCT=$DEFAULT_SL_PCT,DEFAULT_TP_PCT=$DEFAULT_TP_PCT \
             --set-secrets WALLET_PRIVATE_KEY=WALLET_PRIVATE_KEY:latest
+          echo "✅ Monitor deployed successfully"
