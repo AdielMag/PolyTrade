@@ -13,7 +13,7 @@ _client: firestore.Client | None = None
 def get_client() -> firestore.Client:
     global _client
     if _client is None:
-        _client = firestore.Client(project=settings.gcp_project_id)
+        _client = firestore.Client(project=settings.gcp_project_id, database="polytrade")
     return _client
 
 
