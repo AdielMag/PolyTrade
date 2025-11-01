@@ -91,6 +91,7 @@ def run_monitor() -> dict[str, Any]:
                 should_close = False
             
             if should_close:
+                logger.info(f"  📤 Placing closing order: {opposite_side} {size} @ ${current_price:.4f}")
                 # Place closing order
                 close_order = client.place_order(
                     token_id=token_id,
@@ -100,7 +101,9 @@ def run_monitor() -> dict[str, Any]:
                 )
                 
                 if close_order.get("ok"):
+                    logger.info(f"  ✅ Order executed successfully")
                     # Update trade in Firestore
+                    logger.debug(f"  Updating Firestore with closed status...")
                     doc.reference.update({
                         "status": "CLOSED",
                         "closedAt": int(time.time()),
@@ -111,6 +114,7 @@ def run_monitor() -> dict[str, Any]:
                     })
                     
                     # Log event
+                    logger.debug(f"  Creating close event in Firestore...")
                     add_doc("events", {
                         "tradeId": trade_id,
                         "type": "CLOSED",
@@ -123,25 +127,41 @@ def run_monitor() -> dict[str, Any]:
                     
                     # Send notification via Bot B
                     if user_chat_id:
+                        logger.debug(f"  Sending notification to user chat {user_chat_id}...")
                         await_send_notification(
                             user_chat_id,
                             trade_id,
                             close_reason,
                             pnl_usd,
                             pnl_pct,
-                            trade.get("title", "Trade")
+                            market_title
                         )
+                    else:
+                        logger.debug(f"  No user chat ID, skipping notification")
                     
                     closed += 1
-                    logger.info(f"Successfully closed trade {trade_id}")
+                    logger.info(f"  ✅ Successfully closed trade {trade_id}")
                 else:
-                    logger.error(f"Failed to close trade {trade_id}: {close_order.get('error')}")
+                    logger.error(f"  ❌ Failed to place close order: {close_order.get('error')}")
+                    logger.error(f"     Order details: {opposite_side} {size} @ ${current_price:.4f}")
                     errors += 1
                     
         except Exception as e:
-            logger.error(f"Error monitoring trade {trade_id}: {e}")
+            logger.error(f"  ❌ Error monitoring trade {trade_id}: {e}")
+            logger.error(f"     Market: {market_title[:60]}")
+            import traceback
+            logger.error(f"     Traceback: {traceback.format_exc()}")
             errors += 1
             continue
+    
+    # Final summary
+    logger.info("=" * 80)
+    logger.info("MONITOR SUMMARY:")
+    logger.info(f"  Total trades processed: {processed}")
+    logger.info(f"  Trades closed: {closed}")
+    logger.info(f"  Errors encountered: {errors}")
+    logger.info(f"  Trades still open: {processed - closed - errors}")
+    logger.info("=" * 80)
     
     return {
         "processed": processed,
