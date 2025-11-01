@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy project metadata and sources
+COPY pyproject.toml poetry.lock* ./
+COPY README.md ./
+COPY src ./src
+
+# Install project (uses poetry-core backend)
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir .
+
+# Default port for local dev
+EXPOSE 8000
+
+# APP_MODULE must be provided at runtime, e.g.:
+# -e APP_MODULE=polytrade.telegram.bot_a:app
+CMD ["sh", "-c", "uvicorn ${APP_MODULE} --host 0.0.0.0 --port 8000"]
+
+

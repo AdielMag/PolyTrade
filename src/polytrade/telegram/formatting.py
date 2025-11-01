@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from . import keyboards as kb
 from ..balances import get_current
 
 

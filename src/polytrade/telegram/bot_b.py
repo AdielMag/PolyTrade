@@ -5,7 +5,9 @@ from aiogram import Bot, Dispatcher, types
 
 from ..config import settings
 from ..balances import get_current
+from ..logging import configure_logging
 
+configure_logging()
 
 app = FastAPI()
 dp = Dispatcher()
@@ -25,13 +27,13 @@ async def send_notification(chat_id: int, text: str) -> None:
 
 
 @app.post("/webhook")
-async def telegram_webhook(req: Request):
+async def telegram_webhook(req: Request) -> dict[str, bool]:
     # Currently, we do not process inbound commands; reserved for future
     return {"ok": True}
 
 
 @app.get("/health")
-def health():
+def health() -> dict[str, bool]:
     return {"ok": True}
 
 

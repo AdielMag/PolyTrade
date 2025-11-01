@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import os
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.utils.i18n import I18n
 
 from ..config import settings
 from ..firestore import get_client
@@ -12,7 +10,9 @@ from ..balances import get_current
 from .formatting import suggestion_message
 from .keyboards import amount_presets_kb, confirm_kb
 from ..execution import place_trade
+from ..logging import configure_logging
 
+configure_logging()
 
 app = FastAPI()
 dp = Dispatcher()
@@ -23,7 +23,6 @@ def get_bot() -> Bot:
         # Return a bot with an obviously invalid token is risky; better to raise when used
         raise RuntimeError("TELEGRAM_BOT_A_TOKEN is not set")
     return Bot(token=settings.bot_a_token)
-i18n = I18n(path="locales", default_locale="en")
 
 
 @dp.message(Command("start"))
@@ -51,6 +50,9 @@ async def cmd_suggest(message: types.Message) -> None:
 async def on_amount_select(callback: types.CallbackQuery) -> None:
     # amt:<suggestion_id>:<token_id>:<side>:<kind>:<value>
     parts = (callback.data or "").split(":")
+    if len(parts) != 6:
+        await callback.answer("Invalid callback data")
+        return
     _, suggestion_id, token_id, side, kind, value = parts
     size = 1.0
     if kind == "size":
@@ -70,7 +72,11 @@ async def on_amount_select(callback: types.CallbackQuery) -> None:
 @dp.callback_query(lambda c: c.data and c.data.startswith("confirm:"))
 async def on_confirm(callback: types.CallbackQuery) -> None:
     # confirm:<suggestion_id>:<token_id>:<side>:<price>:<size>
-    _, suggestion_id, token_id, side, price, size = (callback.data or "").split(":")
+    parts = (callback.data or "").split(":")
+    if len(parts) != 6:
+        await callback.answer("Invalid callback data")
+        return
+    _, suggestion_id, token_id, side, price, size = parts
     trade = place_trade(
         suggestion_id=suggestion_id,
         token_id=token_id,
@@ -84,7 +90,7 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
 
 
 @app.post("/webhook")
-async def telegram_webhook(req: Request):
+async def telegram_webhook(req: Request) -> dict[str, bool]:
     data = await req.json()
     update = types.Update.model_validate(data)
     bot = get_bot()
@@ -93,7 +99,7 @@ async def telegram_webhook(req: Request):
 
 
 @app.get("/health")
-def health():
+def health() -> dict[str, bool]:
     return {"ok": True}
 
 

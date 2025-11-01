@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import FastAPI
 
 from ..monitor import run_monitor
+from ..logging import configure_logging
 
+configure_logging()
 
 app = FastAPI()
 
 
 @app.post("/run")
-def run():
+def run() -> dict[str, Any]:
     return run_monitor()
 
 
 @app.get("/health")
-def health():
+def health() -> dict[str, bool]:
     return {"ok": True}
 
 
