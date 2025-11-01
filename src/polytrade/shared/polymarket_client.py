@@ -103,9 +103,12 @@ class PolymarketClient:
                     logger.info("  ✅ No open orders (all filled or canceled)")
                 
                 # 2. Get positions (actual holdings from filled orders)
+                # NOTE: py-clob-client does NOT have get_positions() method
+                # We must use the Data API directly: https://data-api.polymarket.com/positions
                 logger.info("")
                 logger.info("=" * 80)
                 logger.info("FETCHING POSITIONS FROM DATA API...")
+                logger.info("ℹ️  py-clob-client has no get_positions() - using Data API directly")
                 
                 import httpx
                 import json
@@ -114,15 +117,17 @@ class PolymarketClient:
                 wallet_address = self.client.get_address()
                 logger.info(f"✅ Wallet address from client.get_address(): {wallet_address}")
                 
-                # For Polymarket, we might need to use the proxy/funder address instead
-                # Try proxy address if configured
+                # Polymarket uses proxy wallets - positions are stored under the proxy address
+                # The proxy/funder is what actually holds the positions
                 proxy_address = settings.proxy_address if settings.proxy_address else None
                 if proxy_address:
-                    logger.info(f"ℹ️  Also have proxy address from settings: {proxy_address}")
-                    logger.info(f"ℹ️  Trying proxy address first (Polymarket uses proxy wallets)")
+                    logger.info(f"ℹ️  Proxy/Funder address from settings: {proxy_address}")
+                    logger.info(f"ℹ️  Using proxy address (Polymarket positions are on proxy wallet)")
                     query_address = proxy_address
                 else:
-                    logger.info(f"ℹ️  No proxy address configured, using wallet address")
+                    logger.warning("⚠️ No proxy address configured in settings!")
+                    logger.warning("   Positions in Polymarket are usually on proxy wallet, not EOA")
+                    logger.warning("   Trying wallet address but this might return 0 positions")
                     query_address = wallet_address
                 
                 # IMPORTANT: sizeThreshold defaults to 1.0, set to 0 to get all positions
@@ -177,44 +182,36 @@ class PolymarketClient:
                             # Log all available fields
                             logger.debug(f"  All fields: {list(pos.keys())}")
                             
-                            # Try to extract position data - check multiple possible field names
-                            size = None
-                            current_price = None
+                            # According to official docs: https://docs.polymarket.com/api-reference/core/get-current-positions-for-a-user
+                            # Response includes: size, curPrice, currentValue, avgPrice, etc.
                             
-                            # Check for size field (might be named differently)
-                            for size_field in ["size", "amount", "quantity", "balance"]:
-                                if size_field in pos:
-                                    size = float(pos.get(size_field, 0.0))
-                                    logger.info(f"  Found size in '{size_field}': {size}")
-                                    break
+                            # Option 1: Use currentValue directly (most accurate)
+                            if "currentValue" in pos:
+                                position_value = float(pos.get("currentValue", 0.0))
+                                logger.info(f"  Using 'currentValue' directly: ${position_value:.2f}")
+                            else:
+                                # Option 2: Calculate from size * curPrice
+                                size = float(pos.get("size", 0.0))
+                                cur_price = float(pos.get("curPrice", 0.0))
+                                position_value = size * cur_price
+                                logger.info(f"  Calculated: size={size} × curPrice=${cur_price:.4f} = ${position_value:.2f}")
                             
-                            if size is None:
-                                logger.warning(f"  ⚠️ Could not find size field. Available fields: {list(pos.keys())}")
-                                size = 0.0
+                            # Log position details
+                            title = pos.get("title", "N/A")
+                            outcome = pos.get("outcome", "N/A")
+                            size = float(pos.get("size", 0.0))
+                            avg_price = float(pos.get("avgPrice", 0.0))
+                            cur_price = float(pos.get("curPrice", 0.0))
+                            pnl = float(pos.get("cashPnl", 0.0))
                             
-                            # Check for price field
-                            for price_field in ["price", "currentPrice", "marketPrice", "value"]:
-                                if price_field in pos:
-                                    current_price = float(pos.get(price_field, 0.0))
-                                    logger.info(f"  Found price in '{price_field}': {current_price}")
-                                    break
+                            logger.info(f"  📊 Market: {title[:60]}")
+                            logger.info(f"  🎯 Outcome: {outcome}")
+                            logger.info(f"  📦 Size: {size}")
+                            logger.info(f"  💵 Avg Price: ${avg_price:.4f} | Current: ${cur_price:.4f}")
+                            logger.info(f"  💰 Position Value: ${position_value:.2f}")
+                            logger.info(f"  📈 P&L: ${pnl:+.2f}")
                             
-                            if current_price is None:
-                                logger.warning(f"  ⚠️ Could not find price field. Available fields: {list(pos.keys())}")
-                                current_price = 0.0
-                            
-                            # Log other useful fields
-                            asset = pos.get("asset", pos.get("token", pos.get("tokenId", "N/A")))
-                            market = pos.get("market", pos.get("question", "N/A"))
-                            
-                            logger.info(f"  Asset/Token: {asset}")
-                            logger.info(f"  Market: {market[:60] if isinstance(market, str) else market}")
-                            
-                            # Calculate value
-                            position_value = size * current_price
                             positions_usd += position_value
-                            
-                            logger.info(f"  Calculation: {size} × ${current_price:.4f} = ${position_value:.2f}")
                             logger.info(f"  Running total: ${positions_usd:.2f}")
                             
                         except (ValueError, TypeError, KeyError) as e:
