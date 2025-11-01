@@ -28,7 +28,8 @@ def get_bot() -> Bot:
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message) -> None:
     try:
-        bal = get_current()
+        # Force fresh balance fetch from Polymarket
+        bal = get_current(force=True)
         await message.answer(f"Balance: ${bal['available_usd']:.2f}\nUse /suggest to view ideas.")
     except Exception as e:
         await message.answer(f"⚠️ Error fetching balance: {str(e)}\n\nPlease try again or contact support.")
