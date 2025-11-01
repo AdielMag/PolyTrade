@@ -31,4 +31,3 @@ def place_trade(suggestion_id: str, token_id: str, side: str, price: float, size
     add_doc("events", {"tradeId": trade_id, "type": "CREATED", "message": "Trade opened", "createdAt": int(time.time())})
     return {"trade_id": trade_id, **trade}
 
-

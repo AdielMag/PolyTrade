@@ -9,4 +9,3 @@ def configure_logging() -> None:
         level="INFO",
     )
 
-

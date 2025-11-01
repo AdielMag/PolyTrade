@@ -40,4 +40,3 @@ def update_doc(collection: str, doc_id: str, data: dict[str, Any]) -> None:
     """Update specific fields in a document."""
     get_client().collection(collection).document(doc_id).update(data)
 
-

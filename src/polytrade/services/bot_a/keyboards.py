@@ -19,4 +19,3 @@ def confirm_kb(suggestion_id: str, token_id: str, side: str, price: float, size:
         ]
     )
 
-

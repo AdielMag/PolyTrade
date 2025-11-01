@@ -5,9 +5,9 @@ from typing import Any
 
 from loguru import logger
 
-from .config import settings
-from .firestore import add_doc
-from .polymarket_client import PolymarketClient
+from ...shared.config import settings
+from ...shared.firestore import add_doc
+from ...shared.polymarket_client import PolymarketClient
 
 
 def compute_edge_bps(fair: float, ask: float) -> float:
@@ -91,5 +91,4 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
     
     logger.info(f"Analysis complete: created {len(suggestions)} suggestions")
     return suggestions
-
 

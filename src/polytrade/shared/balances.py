@@ -50,4 +50,3 @@ def get_current(force: bool = False) -> Balance:
         # Return zeros if no cache available
         return Balance(available_usd=0.0, locked_usd=0.0, updated_at=now)
 
-

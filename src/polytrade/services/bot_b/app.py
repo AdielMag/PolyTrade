@@ -3,9 +3,9 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, types
 
-from ..config import settings
-from ..balances import get_current
-from ..logging import configure_logging
+from ...shared.config import settings
+from ...shared.balances import get_current
+from ...shared.logging import configure_logging
 
 configure_logging()
 
@@ -45,5 +45,4 @@ async def telegram_webhook(req: Request) -> dict[str, bool]:
 @app.get("/health")
 def health() -> dict[str, bool]:
     return {"ok": True}
-
 

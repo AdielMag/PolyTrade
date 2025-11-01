@@ -5,7 +5,7 @@ from typing import Any
 
 from loguru import logger
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, OrderType
+from py_clob_client.clob_types import AssetType, BalanceAllowanceParams, OrderArgs, OrderType
 from py_clob_client.order_builder.constants import BUY, SELL
 
 from .config import settings
@@ -28,15 +28,17 @@ class PolymarketClient:
     def get_balance(self) -> dict[str, float]:
         """Get current USDC balance from Polymarket CLOB."""
         try:
-            # Get balance from CLOB client - returns balance in USDC
-            balance_response = self.client.get_balance()
+            # Get balance allowance from CLOB client for COLLATERAL (USDC)
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            balance_response = self.client.get_balance_allowance(params)
             
-            # The response should be a number (float or int) representing USDC balance
-            if isinstance(balance_response, (int, float)):
-                available = float(balance_response)
-            elif isinstance(balance_response, dict):
-                # If it returns a dict, extract the balance field
+            # The response should be a dict with balance and allowance fields
+            if isinstance(balance_response, dict):
+                # Extract the balance field - this is the USDC balance
                 available = float(balance_response.get("balance", 0.0))
+            elif isinstance(balance_response, (int, float)):
+                # Fallback if it returns a number
+                available = float(balance_response)
             else:
                 logger.warning(f"Unexpected balance response type: {type(balance_response)}")
                 available = 0.0
@@ -115,5 +117,4 @@ class PolymarketClient:
         except Exception as exc:  # noqa: BLE001
             logger.error(f"cancel failed: {exc}")
             return {"ok": False, "error": str(exc)}
-
 

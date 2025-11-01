@@ -4,13 +4,13 @@ from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
-from ..config import settings
-from ..firestore import get_client
-from ..balances import get_current
+from ...shared.config import settings
+from ...shared.firestore import get_client
+from ...shared.balances import get_current
 from .formatting import suggestion_message
 from .keyboards import amount_presets_kb, confirm_kb
-from ..execution import place_trade
-from ..logging import configure_logging
+from ...shared.execution import place_trade
+from ...shared.logging import configure_logging
 
 configure_logging()
 
@@ -57,8 +57,8 @@ async def cmd_suggest(message: types.Message) -> None:
             text = suggestion_message(s.get("title", ""), s.get("side", ""), int(s.get("edgeBps", 0)))
             kb = amount_presets_kb(suggestion_id=doc.id, token_id=s.get("tokenId", ""), side=s.get("side", ""))
             await message.answer(text, reply_markup=kb)
-            
     except Exception as e:
+        # User-friendly error handling
         error_msg = str(e)
         if "index" in error_msg.lower():
             await message.answer(
@@ -80,80 +80,66 @@ async def cmd_suggest(message: types.Message) -> None:
 @dp.callback_query(lambda c: c.data and c.data.startswith("amt:"))
 async def on_amount_select(callback: types.CallbackQuery) -> None:
     try:
-        # amt:<suggestion_id>:<token_id>:<side>:<kind>:<value>
-        parts = (callback.data or "").split(":")
-        if len(parts) != 6:
-            await callback.answer("❌ Invalid callback data", show_alert=True)
+        if not callback.data or len(callback.data.split(":")) < 6:
+            await callback.answer("Invalid selection data")
             return
-        _, suggestion_id, token_id, side, kind, value = parts
-        size = 1.0
-        if kind == "size":
-            size = float(value)
-        else:
-            await callback.message.answer("📝 Send custom size (tokens)")
-            await callback.answer()
-            return
-        price = 0.01  # placeholder; fetch best ask/expected price in analyzer/suggestion
-        await callback.message.answer(
-            f"Confirm trade?\n{side} token {token_id}\nPrice: {price:.3f}\nSize: {size}",
-            reply_markup=confirm_kb(suggestion_id, token_id, side, price, size),
-        )
+            
+        parts = callback.data.split(":")
+        suggestion_id, token_id, side, size_type, size_str = parts[1], parts[2], parts[3], parts[4], parts[5]
+        size = float(size_str)
+        
+        # TODO: fetch suggestion doc to get current price
+        price = 0.5  # placeholder
+        
+        kb = confirm_kb(suggestion_id, token_id, side, price, size)
+        await callback.message.edit_text(f"Confirm trade: {size} @ {price}", reply_markup=kb)  # type: ignore
         await callback.answer()
-    except ValueError as e:
-        await callback.answer(f"❌ Invalid value: {str(e)}", show_alert=True)
+    except ValueError:
+        await callback.answer("⚠️ Invalid amount format")
     except Exception as e:
-        await callback.answer(f"⚠️ Error: {str(e)}", show_alert=True)
+        await callback.answer(f"⚠️ Error: {str(e)}")
+
+
+@dp.callback_query(lambda c: c.data == "cancel")
+async def on_cancel(callback: types.CallbackQuery) -> None:
+    await callback.message.delete()  # type: ignore
+    await callback.answer("Cancelled")
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("confirm:"))
 async def on_confirm(callback: types.CallbackQuery) -> None:
     try:
-        # confirm:<suggestion_id>:<token_id>:<side>:<price>:<size>
-        parts = (callback.data or "").split(":")
-        if len(parts) != 6:
-            await callback.answer("❌ Invalid callback data", show_alert=True)
+        if not callback.data or len(callback.data.split(":")) < 6:
+            await callback.answer("Invalid confirmation data")
             return
-        _, suggestion_id, token_id, side, price, size = parts
+            
+        parts = callback.data.split(":")
+        suggestion_id, token_id, side, price_str, size_str = parts[1], parts[2], parts[3], parts[4], parts[5]
+        price, size = float(price_str), float(size_str)
         
-        # Notify user we're placing the trade
-        await callback.answer("🔄 Placing trade...", show_alert=False)
-        status_msg = await callback.message.answer("⏳ Placing your trade...")
+        # Loading indicator
+        await callback.answer("⏳ Placing order...")
         
-        trade = place_trade(
-            suggestion_id=suggestion_id,
-            token_id=token_id,
-            side=side,
-            price=float(price),
-            size=float(size),
-            user_chat_id=callback.from_user.id,
-        )
+        # Place the trade
+        user_chat_id = callback.from_user.id
+        result = place_trade(suggestion_id, token_id, side, price, size, user_chat_id)
         
-        # Delete status message
-        await status_msg.delete()
-        
-        if trade['status'] == 'OPEN':
-            await callback.message.answer(
-                f"✅ Trade placed successfully!\n\n"
-                f"Status: {trade['status']}\n"
-                f"Size: {trade['size']}\n"
-                f"Entry Price: {trade['entryPx']}"
-            )
-        elif trade['status'] == 'FAILED':
-            await callback.message.answer(
-                f"❌ Trade failed!\n\n"
-                f"Status: {trade['status']}\n"
-                f"Please check your balance and try again."
+        if result.get("status") == "OPEN":
+            await callback.message.edit_text(  # type: ignore
+                f"✅ Trade placed!\n"
+                f"ID: {result.get('trade_id', 'N/A')}\n"
+                f"{size} @ {price}"
             )
         else:
-            await callback.message.answer(f"Trade status: {trade['status']} size={trade['size']}")
-            
-    except ValueError as e:
-        await callback.answer(f"❌ Invalid value: {str(e)}", show_alert=True)
-    except RuntimeError as e:
-        await callback.message.answer(f"⚠️ Configuration error: {str(e)}")
+            await callback.message.edit_text(  # type: ignore
+                f"❌ Trade failed\n"
+                f"Status: {result.get('status', 'UNKNOWN')}"
+            )
+    except ValueError:
+        await callback.answer("⚠️ Invalid price or size format")
     except Exception as e:
-        await callback.message.answer(
-            f"⚠️ Error placing trade: {str(e)}\n\n"
+        await callback.message.edit_text(  # type: ignore
+            f"❌ Error placing trade: {str(e)}\n\n"
             f"Please check your wallet credentials and balance."
         )
 
@@ -170,5 +156,4 @@ async def telegram_webhook(req: Request) -> dict[str, bool]:
 @app.get("/health")
 def health() -> dict[str, bool]:
     return {"ok": True}
-
 

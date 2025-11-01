@@ -5,9 +5,9 @@ from typing import Any
 
 from loguru import logger
 
-from .config import settings
-from .firestore import get_client, add_doc
-from .polymarket_client import PolymarketClient
+from ...shared.config import settings
+from ...shared.firestore import get_client, add_doc
+from ...shared.polymarket_client import PolymarketClient
 
 
 def run_monitor() -> dict[str, Any]:
@@ -133,7 +133,7 @@ def await_send_notification(chat_id: int, trade_id: str, reason: str, pnl_usd: f
     """Send trade close notification via Bot B (synchronous wrapper)."""
     try:
         import asyncio
-        from .telegram.bot_b import send_notification
+        from ..bot_b.app import send_notification
         
         pnl_emoji = "✅" if pnl_usd >= 0 else "❌"
         message = (
@@ -151,5 +151,4 @@ def await_send_notification(chat_id: int, trade_id: str, reason: str, pnl_usd: f
         
     except Exception as e:
         logger.error(f"Failed to send notification: {e}")
-
 

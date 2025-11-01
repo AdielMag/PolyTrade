@@ -45,4 +45,3 @@ class Settings(BaseSettings):
 
 settings = Settings()  # Singleton-style import
 
-
