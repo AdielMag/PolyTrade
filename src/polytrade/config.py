@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     bot_a_webhook_url: str | None = Field(default=None, alias="TELEGRAM_BOT_A_WEBHOOK_URL")
     bot_b_webhook_url: str | None = Field(default=None, alias="TELEGRAM_BOT_B_WEBHOOK_URL")
     bot_b_default_chat_id: int | None = Field(default=None, alias="BOT_B_DEFAULT_CHAT_ID")
+    
+    @field_validator("bot_b_default_chat_id", mode="before")
+    @classmethod
+    def empty_string_to_none(cls, v: str | int | None) -> int | None:
+        """Convert empty strings to None for optional integer fields."""
+        if v == "" or v is None:
+            return None
+        return int(v) if isinstance(v, str) else v
 
     # Strategy
     edge_bps: int = Field(default=50, alias="EDGE_BPS")
