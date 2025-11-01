@@ -58,35 +58,33 @@ class PolymarketClient:
             
             # Get open orders to calculate locked funds
             locked_usd = 0.0
+            positions_usd = 0.0
+            
             try:
-                logger.debug("Fetching open orders to calculate locked funds...")
+                logger.info("=" * 80)
+                logger.info("Fetching open orders and positions...")
+                
+                # 1. Get open orders (pending unfilled orders)
+                logger.debug("Calling get_orders() to fetch pending orders...")
                 orders_response = self.client.get_orders()
                 
                 logger.debug(f"get_orders() response type: {type(orders_response)}")
                 logger.debug(f"get_orders() response: {orders_response}")
                 
-                # Handle different response formats
+                # Handle different response formats for orders
                 orders = []
                 if isinstance(orders_response, dict):
-                    # Response might be paginated: {"data": [...], "next_cursor": "..."}
                     if "data" in orders_response:
                         orders = orders_response.get("data", [])
-                        logger.debug(f"Extracted {len(orders)} orders from 'data' field")
                     else:
-                        # Response might be a single order dict
-                        orders = [orders_response]
-                        logger.debug("Response is a single order dict")
+                        orders = [orders_response] if orders_response else []
                 elif isinstance(orders_response, list):
                     orders = orders_response
-                    logger.debug(f"Response is a list with {len(orders)} orders")
-                else:
-                    logger.warning(f"Unexpected orders response type: {type(orders_response)}")
                 
                 if orders:
-                    logger.info(f"Processing {len(orders)} open orders to calculate locked funds")
+                    logger.info(f"📝 Processing {len(orders)} open orders")
                     for i, order in enumerate(orders):
                         try:
-                            # Each order has size and price fields
                             size = float(order.get("size", 0.0))
                             price = float(order.get("price", 0.0))
                             order_value = size * price
@@ -94,38 +92,87 @@ class PolymarketClient:
                             
                             logger.debug(
                                 f"  Order {i+1}: size={size}, price={price:.4f}, "
-                                f"value=${order_value:.2f}, "
-                                f"side={order.get('side', 'N/A')}, "
-                                f"status={order.get('status', 'N/A')}"
+                                f"value=${order_value:.2f}, side={order.get('side', 'N/A')}"
                             )
                         except (ValueError, TypeError) as e:
-                            logger.warning(f"  Order {i+1}: Could not parse order data: {e}")
+                            logger.warning(f"  Order {i+1}: Could not parse - {e}")
                             continue
                     
-                    logger.info(f"Total locked in {len(orders)} orders: ${locked_usd:.2f}")
+                    logger.info(f"  🔒 Total locked in open orders: ${locked_usd:.2f}")
                 else:
-                    logger.info("No open orders found - all funds available")
+                    logger.info("  ✅ No open orders (all filled or canceled)")
+                
+                # 2. Get positions (actual holdings from filled orders)
+                logger.info("")
+                logger.info("Fetching positions from Data API...")
+                
+                import httpx
+                
+                # Get wallet address from the client
+                wallet_address = self.client.get_address()
+                logger.debug(f"Using wallet address: {wallet_address}")
+                
+                positions_url = f"https://data-api.polymarket.com/positions?user={wallet_address}"
+                logger.debug(f"Positions API URL: {positions_url}")
+                
+                pos_response = httpx.get(positions_url, timeout=30.0)
+                pos_response.raise_for_status()
+                positions = pos_response.json()
+                
+                logger.info(f"📊 Received {len(positions)} positions from Data API")
+                logger.debug(f"Positions response type: {type(positions)}")
+                
+                if positions and isinstance(positions, list):
+                    for i, pos in enumerate(positions):
+                        try:
+                            # Position value is current market value
+                            size = float(pos.get("size", 0.0))
+                            current_price = float(pos.get("price", 0.0))  # Current market price
+                            position_value = size * current_price
+                            positions_usd += position_value
+                            
+                            logger.debug(
+                                f"  Position {i+1}: asset={pos.get('asset', 'N/A')[:20]}, "
+                                f"size={size}, price=${current_price:.4f}, "
+                                f"value=${position_value:.2f}"
+                            )
+                        except (ValueError, TypeError, KeyError) as e:
+                            logger.warning(f"  Position {i+1}: Could not parse - {e}")
+                            continue
                     
+                    logger.info(f"  💎 Total value of positions: ${positions_usd:.2f}")
+                else:
+                    logger.info("  ✅ No open positions")
+                    
+                logger.info("=" * 80)
+                    
+            except httpx.HTTPError as e:
+                logger.error(f"❌ HTTP error fetching positions: {e}")
+                positions_usd = 0.0
             except Exception as e:
-                logger.error(f"Failed to fetch open orders for locked balance: {e}")
+                logger.error(f"❌ Failed to fetch orders/positions: {e}")
                 logger.error(f"Exception type: {type(e).__name__}")
                 import traceback
                 logger.debug(f"Traceback: {traceback.format_exc()}")
                 locked_usd = 0.0
+                positions_usd = 0.0
             
-            # Total portfolio value = available + locked in orders
-            total_usd = available_usd + locked_usd
+            # Total portfolio value = available + locked + positions
+            total_usd = available_usd + locked_usd + positions_usd
             
             logger.info("=" * 80)
-            logger.info("BALANCE SUMMARY:")
-            logger.info(f"  💰 Available: ${available_usd:.2f}")
-            logger.info(f"  🔒 Locked:    ${locked_usd:.2f}")
-            logger.info(f"  📊 Total:     ${total_usd:.2f}")
+            logger.info("💰 PORTFOLIO SUMMARY:")
+            logger.info(f"  Available USDC:     ${available_usd:.2f}")
+            logger.info(f"  Locked in Orders:   ${locked_usd:.2f}")
+            logger.info(f"  Position Value:     ${positions_usd:.2f}")
+            logger.info(f"  ─────────────────────────────")
+            logger.info(f"  📊 TOTAL PORTFOLIO: ${total_usd:.2f}")
             logger.info("=" * 80)
             
             return {
                 "available_usd": available_usd,
                 "locked_usd": locked_usd,
+                "positions_usd": positions_usd,
                 "total_usd": total_usd
             }
         except Exception as e:
@@ -136,7 +183,7 @@ class PolymarketClient:
             logger.error(f"Traceback: {traceback.format_exc()}")
             logger.error("=" * 80)
             # Return zeros as fallback to prevent crashes
-            return {"available_usd": 0.0, "locked_usd": 0.0, "total_usd": 0.0}
+            return {"available_usd": 0.0, "locked_usd": 0.0, "positions_usd": 0.0, "total_usd": 0.0}
 
     def list_markets(self) -> list[dict[str, Any]]:
         """Fetch active sports markets from Polymarket Gamma API."""

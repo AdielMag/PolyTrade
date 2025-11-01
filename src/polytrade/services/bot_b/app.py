@@ -24,10 +24,10 @@ async def send_notification(chat_id: int, text: str) -> None:
     try:
         bal = get_current()
         header = (
-            f"💰 <b>Portfolio</b>\n"
-            f"   Total: ${bal['total_usd']:.2f}\n"
-            f"   Available: ${bal['available_usd']:.2f}\n"
-            f"   In Orders: ${bal['locked_usd']:.2f}\n\n"
+            f"💰 <b>Portfolio: ${bal['total_usd']:.2f}</b>\n"
+            f"   💵 Available: ${bal['available_usd']:.2f}\n"
+            f"   📝 In Orders: ${bal['locked_usd']:.2f}\n"
+            f"   💎 Positions: ${bal['positions_usd']:.2f}\n\n"
         )
         bot = get_bot()
         await bot.send_message(chat_id, header + text, parse_mode="HTML")

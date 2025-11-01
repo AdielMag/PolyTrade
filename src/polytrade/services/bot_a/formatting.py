@@ -7,8 +7,9 @@ def balance_header() -> str:
     bal = get_current()
     return (
         f"💰 Portfolio: ${bal['total_usd']:.2f}\n"
-        f"   Available: ${bal['available_usd']:.2f}\n"
-        f"   In Orders: ${bal['locked_usd']:.2f}\n"
+        f"   💵 Available: ${bal['available_usd']:.2f}\n"
+        f"   📝 In Orders: ${bal['locked_usd']:.2f}\n"
+        f"   💎 Positions: ${bal['positions_usd']:.2f}\n"
     )
 
 

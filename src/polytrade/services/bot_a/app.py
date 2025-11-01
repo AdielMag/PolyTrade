@@ -32,10 +32,10 @@ async def cmd_start(message: types.Message) -> None:
         bal = get_current(force=True)
         welcome_msg = (
             f"🎯 <b>Welcome to PolyTrade Bot!</b>\n\n"
-            f"💰 <b>Portfolio</b>\n"
-            f"   Total: ${bal['total_usd']:.2f}\n"
-            f"   Available: ${bal['available_usd']:.2f}\n"
-            f"   In Orders: ${bal['locked_usd']:.2f}\n\n"
+            f"💰 <b>Portfolio: ${bal['total_usd']:.2f}</b>\n"
+            f"   💵 Available: ${bal['available_usd']:.2f}\n"
+            f"   📝 In Orders: ${bal['locked_usd']:.2f}\n"
+            f"   💎 Positions: ${bal['positions_usd']:.2f}\n\n"
             f"📊 Use /suggest to view trade opportunities\n"
             f"💡 Get AI-powered market analysis and execute trades instantly!"
         )
@@ -65,8 +65,9 @@ async def cmd_suggest(message: types.Message) -> None:
             bal = get_current()
             no_suggestions_msg = (
                 f"💰 <b>Portfolio: ${bal['total_usd']:.2f}</b>\n"
-                f"   Available: ${bal['available_usd']:.2f}\n"
-                f"   In Orders: ${bal['locked_usd']:.2f}\n\n"
+                f"   💵 Available: ${bal['available_usd']:.2f}\n"
+                f"   📝 In Orders: ${bal['locked_usd']:.2f}\n"
+                f"   💎 Positions: ${bal['positions_usd']:.2f}\n\n"
                 f"📭 <b>No suggestions available right now</b>\n\n"
                 f"The analyzer is constantly scanning markets.\n"
                 f"Check back soon for new opportunities! 🎯"
