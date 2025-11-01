@@ -14,6 +14,8 @@ def place_trade(suggestion_id: str, token_id: str, side: str, price: float, size
     trade = {
         "suggestionId": suggestion_id,
         "tokenId": token_id,
+        "marketId": "",  # Will be populated from suggestion
+        "title": "",  # Will be populated from suggestion  
         "side": side,
         "size": size,
         "entryPx": price,

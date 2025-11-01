@@ -53,11 +53,52 @@ class PolymarketClient:
             return {"available_usd": 0.0, "locked_usd": 0.0}
 
     def list_markets(self) -> list[dict[str, Any]]:
-        # Use Gamma endpoints via public API in a separate client if needed.
-        return []
+        """Fetch active sports markets from Polymarket Gamma API."""
+        try:
+            import httpx
+            
+            # Gamma API endpoint for markets
+            url = "https://gamma-api.polymarket.com/markets"
+            params = {
+                "active": "true",
+                "closed": "false", 
+                "tag": "sports",  # Filter for sports markets only
+                "limit": 100
+            }
+            
+            response = httpx.get(url, params=params, timeout=30.0)
+            response.raise_for_status()
+            markets = response.json()
+            
+            logger.info(f"Fetched {len(markets)} sports markets from Gamma API")
+            return markets if isinstance(markets, list) else []
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch markets from Gamma API: {e}")
+            return []
 
-    def get_quotes(self, market_id: str) -> dict[str, Any]:
-        return {"best_bid": 0.0, "best_ask": 0.0, "ts": int(time.time())}
+    def get_quotes(self, token_id: str) -> dict[str, Any]:
+        """Get current best bid/ask prices from CLOB order book."""
+        try:
+            # Use CLOB client to get order book
+            book = self.client.get_order_book(token_id)
+            
+            # Extract best bid and ask
+            bids = book.get("bids", [])
+            asks = book.get("asks", [])
+            
+            best_bid = float(bids[0]["price"]) if bids else 0.0
+            best_ask = float(asks[0]["price"]) if asks else 0.0
+            
+            return {
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "ts": int(time.time())
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get quotes for token {token_id}: {e}")
+            return {"best_bid": 0.0, "best_ask": 0.0, "ts": int(time.time())}
 
     def place_order(self, token_id: str, side: str, price: float, size: float) -> dict[str, Any]:
         side_const = BUY if side.upper().startswith("BUY") else SELL
