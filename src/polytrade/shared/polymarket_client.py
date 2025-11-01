@@ -104,45 +104,104 @@ class PolymarketClient:
                 
                 # 2. Get positions (actual holdings from filled orders)
                 logger.info("")
-                logger.info("Fetching positions from Data API...")
+                logger.info("=" * 80)
+                logger.info("FETCHING POSITIONS FROM DATA API...")
                 
                 import httpx
+                import json
                 
                 # Get wallet address from the client
                 wallet_address = self.client.get_address()
-                logger.debug(f"Using wallet address: {wallet_address}")
+                logger.info(f"✅ Wallet address from client: {wallet_address}")
                 
                 positions_url = f"https://data-api.polymarket.com/positions?user={wallet_address}"
-                logger.debug(f"Positions API URL: {positions_url}")
+                logger.info(f"📡 API URL: {positions_url}")
                 
+                logger.debug("Making HTTP GET request...")
                 pos_response = httpx.get(positions_url, timeout=30.0)
+                logger.info(f"✅ Response status code: {pos_response.status_code}")
+                
                 pos_response.raise_for_status()
                 positions = pos_response.json()
                 
-                logger.info(f"📊 Received {len(positions)} positions from Data API")
-                logger.debug(f"Positions response type: {type(positions)}")
+                logger.info(f"📦 Received response with {len(positions) if isinstance(positions, list) else 'unknown'} items")
+                logger.info(f"Response type: {type(positions)}")
+                
+                # Log first position structure if available
+                if positions and isinstance(positions, list) and len(positions) > 0:
+                    first_pos = positions[0]
+                    logger.info("")
+                    logger.info("FIRST POSITION STRUCTURE:")
+                    logger.info(f"  Available keys: {list(first_pos.keys())}")
+                    
+                    # Log full first position for debugging
+                    pos_json = json.dumps(first_pos, indent=2)
+                    if len(pos_json) > 800:
+                        pos_json = pos_json[:800] + "\n... (truncated)"
+                    logger.info(f"  Full position data:\n{pos_json}")
+                    logger.info("")
                 
                 if positions and isinstance(positions, list):
+                    logger.info(f"Processing {len(positions)} positions...")
                     for i, pos in enumerate(positions):
                         try:
-                            # Position value is current market value
-                            size = float(pos.get("size", 0.0))
-                            current_price = float(pos.get("price", 0.0))  # Current market price
+                            logger.info(f"  --- Position {i+1} ---")
+                            
+                            # Log all available fields
+                            logger.debug(f"  All fields: {list(pos.keys())}")
+                            
+                            # Try to extract position data - check multiple possible field names
+                            size = None
+                            current_price = None
+                            
+                            # Check for size field (might be named differently)
+                            for size_field in ["size", "amount", "quantity", "balance"]:
+                                if size_field in pos:
+                                    size = float(pos.get(size_field, 0.0))
+                                    logger.info(f"  Found size in '{size_field}': {size}")
+                                    break
+                            
+                            if size is None:
+                                logger.warning(f"  ⚠️ Could not find size field. Available fields: {list(pos.keys())}")
+                                size = 0.0
+                            
+                            # Check for price field
+                            for price_field in ["price", "currentPrice", "marketPrice", "value"]:
+                                if price_field in pos:
+                                    current_price = float(pos.get(price_field, 0.0))
+                                    logger.info(f"  Found price in '{price_field}': {current_price}")
+                                    break
+                            
+                            if current_price is None:
+                                logger.warning(f"  ⚠️ Could not find price field. Available fields: {list(pos.keys())}")
+                                current_price = 0.0
+                            
+                            # Log other useful fields
+                            asset = pos.get("asset", pos.get("token", pos.get("tokenId", "N/A")))
+                            market = pos.get("market", pos.get("question", "N/A"))
+                            
+                            logger.info(f"  Asset/Token: {asset}")
+                            logger.info(f"  Market: {market[:60] if isinstance(market, str) else market}")
+                            
+                            # Calculate value
                             position_value = size * current_price
                             positions_usd += position_value
                             
-                            logger.debug(
-                                f"  Position {i+1}: asset={pos.get('asset', 'N/A')[:20]}, "
-                                f"size={size}, price=${current_price:.4f}, "
-                                f"value=${position_value:.2f}"
-                            )
+                            logger.info(f"  Calculation: {size} × ${current_price:.4f} = ${position_value:.2f}")
+                            logger.info(f"  Running total: ${positions_usd:.2f}")
+                            
                         except (ValueError, TypeError, KeyError) as e:
-                            logger.warning(f"  Position {i+1}: Could not parse - {e}")
+                            logger.error(f"  ❌ Position {i+1}: Could not parse - {e}")
+                            logger.error(f"     Position data: {pos}")
+                            import traceback
+                            logger.debug(f"     Traceback: {traceback.format_exc()}")
                             continue
                     
-                    logger.info(f"  💎 Total value of positions: ${positions_usd:.2f}")
+                    logger.info("")
+                    logger.info(f"  💎 TOTAL POSITIONS VALUE: ${positions_usd:.2f}")
                 else:
-                    logger.info("  ✅ No open positions")
+                    logger.warning("  ⚠️ No positions found or response is not a list")
+                    logger.warning(f"  Response: {positions}")
                     
                 logger.info("=" * 80)
                     
