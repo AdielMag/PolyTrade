@@ -135,7 +135,7 @@ jobs:
   deploy-bot-a:
     name: Deploy Bot A
     needs: [detect-changes, build-image]
-    if: needs.detect-changes.outputs.deploy_bot_a == 'true'
+    if: needs.detect-changes.outputs.deploy_bot_a == 'true' && needs.build-image.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -181,7 +181,7 @@ jobs:
   deploy-bot-b:
     name: Deploy Bot B
     needs: [detect-changes, build-image]
-    if: needs.detect-changes.outputs.deploy_bot_b == 'true'
+    if: needs.detect-changes.outputs.deploy_bot_b == 'true' && needs.build-image.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -228,7 +228,7 @@ jobs:
   deploy-analyzer:
     name: Deploy Analyzer
     needs: [detect-changes, build-image]
-    if: needs.detect-changes.outputs.deploy_analyzer == 'true'
+    if: needs.detect-changes.outputs.deploy_analyzer == 'true' && needs.build-image.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -273,7 +273,7 @@ jobs:
   deploy-monitor:
     name: Deploy Monitor
     needs: [detect-changes, build-image]
-    if: needs.detect-changes.outputs.deploy_monitor == 'true'
+    if: needs.detect-changes.outputs.deploy_monitor == 'true' && needs.build-image.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
