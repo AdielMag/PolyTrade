@@ -21,13 +21,30 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
     logger.info("=" * 80)
     logger.info("Starting analysis run")
     logger.info(f"Max suggestions: {max_suggestions}")
-    logger.info(f"Min liquidity: ${settings.min_liquidity_usd}")
+    logger.info(f"Min liquidity threshold: ${settings.min_liquidity_usd}")
     logger.info(f"Min edge threshold: {settings.edge_bps} bps")
+    logger.info("=" * 80)
     
     client = PolymarketClient()
     logger.info("Fetching markets from Polymarket...")
     markets = client.list_markets()
     logger.info(f"Fetched {len(markets)} total markets")
+    
+    # Check first market structure
+    if markets:
+        first_market = markets[0]
+        logger.info("=" * 80)
+        logger.info("ANALYZING FIRST MARKET STRUCTURE:")
+        logger.info(f"  Question: {first_market.get('question', 'N/A')[:80]}")
+        logger.info(f"  Has 'tokens': {('tokens' in first_market)}")
+        logger.info(f"  Has 'liquidity': {('liquidity' in first_market)}")
+        logger.info(f"  Liquidity value: {first_market.get('liquidity', 'N/A')}")
+        if 'tokens' in first_market:
+            tokens = first_market.get('tokens', [])
+            logger.info(f"  Tokens count: {len(tokens)}")
+            if tokens:
+                logger.info(f"  First token_id: {tokens[0].get('token_id', 'N/A')}")
+        logger.info("=" * 80)
     
     suggestions: list[dict[str, Any]] = []
     now = int(time.time())
@@ -54,43 +71,80 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
             market_question = market.get("question", "N/A")
             condition_id = market.get("condition_id", "N/A")
             
-            if idx <= 10:  # Log first 10 markets in detail
-                logger.debug(f"[{idx}/{len(markets)}] Analyzing: {market_question[:80]}")
+            # More verbose logging for first 5 markets
+            if idx <= 5:
+                logger.info("=" * 60)
+                logger.info(f"🔍 MARKET #{idx}: {market_question[:70]}")
+            elif idx <= 20:  # Less detail for markets 6-20
+                logger.info(f"[{idx}/{len(markets)}] Analyzing: {market_question[:80]}")
             elif idx % 50 == 0:  # Then log every 50th
                 logger.info(f"Progress: analyzed {idx}/{len(markets)} markets so far")
             
+            # Check 1: Tokens
             tokens = market.get("tokens", [])
+            if idx <= 5:
+                logger.info(f"  ✓ Check 1 - Tokens: {len(tokens)} found")
+            
             if not tokens:
                 stats["no_tokens"] += 1
-                logger.debug(f"  ❌ Skipped: no tokens - {market_question[:60]}")
+                if idx <= 5:
+                    logger.warning(f"  ❌ FAILED: No tokens in this market")
+                elif idx <= 20:
+                    logger.debug(f"  ❌ Skipped: no tokens - {market_question[:60]}")
                 continue
                 
             # Get YES token (typically first token)
             yes_token = tokens[0]
             token_id = yes_token.get("token_id", "")
             
-            # Filter by liquidity
+            if idx <= 5:
+                logger.info(f"  ✓ Token ID: {token_id}")
+            
+            # Check 2: Liquidity
             liquidity = float(market.get("liquidity", 0))
+            
+            if idx <= 5:
+                logger.info(f"  ✓ Check 2 - Liquidity: ${liquidity:.2f}")
+                logger.info(f"    Threshold: ${settings.min_liquidity_usd}")
+                logger.info(f"    Pass: {liquidity >= settings.min_liquidity_usd}")
+            
             if liquidity < settings.min_liquidity_usd:
                 stats["low_liquidity"] += 1
-                if idx <= 10:
+                if idx <= 5:
+                    logger.warning(f"  ❌ FAILED: Liquidity ${liquidity:.2f} < ${settings.min_liquidity_usd}")
+                elif idx <= 20:
                     logger.debug(f"  ❌ Skipped: low liquidity ${liquidity:.2f} < ${settings.min_liquidity_usd} - {market_question[:60]}")
                 continue
             
-            # Get current market price
+            # Check 3: Get current market price (quotes)
+            if idx <= 5:
+                logger.info(f"  ✓ Check 3 - Fetching quotes for token {token_id}...")
+            
             try:
                 quotes = client.get_quotes(token_id)
             except Exception as quote_err:
                 stats["no_quotes"] += 1
-                logger.debug(f"  ❌ Skipped: failed to get quotes - {quote_err}")
+                if idx <= 5:
+                    logger.error(f"  ❌ FAILED: Could not get quotes - {quote_err}")
+                else:
+                    logger.debug(f"  ❌ Skipped: failed to get quotes - {quote_err}")
                 continue
                 
             current_ask = quotes["best_ask"]
             current_bid = quotes["best_bid"]
             
+            if idx <= 5:
+                logger.info(f"  ✓ Got quotes: bid=${current_bid:.4f}, ask=${current_ask:.4f}")
+            
+            # Check 4: Valid ask price
+            if idx <= 5:
+                logger.info(f"  ✓ Check 4 - Ask price valid: {current_ask > 0}")
+            
             if current_ask <= 0:
                 stats["invalid_price"] += 1
-                if idx <= 10:
+                if idx <= 5:
+                    logger.warning(f"  ❌ FAILED: Invalid ask price {current_ask}")
+                elif idx <= 20:
                     logger.debug(f"  ❌ Skipped: invalid ask price {current_ask} - {market_question[:60]}")
                 continue
             
@@ -98,8 +152,8 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
             # Simple approach: use midpoint adjusted by volume and momentum
             mid_price = (current_bid + current_ask) / 2
             
-            if idx <= 10:
-                logger.debug(f"  💰 Prices: bid=${current_bid:.4f}, ask=${current_ask:.4f}, mid=${mid_price:.4f}, liq=${liquidity:.2f}")
+            if idx <= 5:
+                logger.info(f"  ✓ Mid price: ${mid_price:.4f}")
             
             # Calculate implied probability from market price
             implied_prob = mid_price
@@ -108,14 +162,24 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
             # In real implementation, fetch external odds or stats
             fair_value = implied_prob  # Placeholder: use external data source
             
+            if idx <= 5:
+                logger.info(f"  ✓ Fair value: ${fair_value:.4f} (currently using mid_price as placeholder)")
+            
             # Calculate edge in basis points
             edge_bps = compute_edge_bps(fair_value, current_ask)
             
-            if idx <= 10:
-                logger.debug(f"  📊 Edge calculation: fair={fair_value:.4f}, ask={current_ask:.4f}, edge={edge_bps:.2f} bps")
+            if idx <= 5:
+                logger.info(f"  ✓ Check 5 - Edge: {edge_bps:.2f} bps")
+                logger.info(f"    Threshold: {settings.edge_bps} bps")
+                logger.info(f"    Pass: {edge_bps >= settings.edge_bps}")
+            elif idx <= 20:
+                logger.debug(f"  📊 Edge: {edge_bps:.2f} bps (threshold: {settings.edge_bps})")
             
             # Only suggest if edge exceeds threshold
             if edge_bps >= settings.edge_bps:
+                if idx <= 5:
+                    logger.info(f"  ✅ PASSED ALL CHECKS! Creating suggestion...")
+                
                 suggestion = {
                     "tokenId": token_id,
                     "marketId": market.get("condition_id", ""),
@@ -133,18 +197,25 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
                 add_doc("suggestions", suggestion)
                 suggestions.append(suggestion)
                 stats["suggestions_created"] += 1
-                logger.info(f"✅ SUGGESTION #{len(suggestions)}: {market_question[:70]}")
+                logger.info(f"🎉 SUGGESTION #{len(suggestions)}: {market_question[:70]}")
                 logger.info(f"   Edge: {edge_bps:.2f} bps | Price: ${current_ask:.4f} | Fair: ${fair_value:.4f} | Liquidity: ${liquidity:.2f}")
             else:
                 stats["insufficient_edge"] += 1
-                if idx <= 10:
+                if idx <= 5:
+                    logger.warning(f"  ❌ FAILED: Insufficient edge {edge_bps:.2f} bps < {settings.edge_bps} bps")
+                elif idx <= 20:
                     logger.debug(f"  ⚠️ Insufficient edge: {edge_bps:.2f} bps < {settings.edge_bps} bps - {market_question[:60]}")
                 
         except Exception as e:
             stats["errors"] += 1
-            logger.error(f"❌ Error analyzing market {idx}: {e}")
-            if idx <= 10:
-                logger.error(f"   Market: {market_question[:60]}")
+            if idx <= 5:
+                logger.error(f"  ❌ EXCEPTION during analysis: {e}")
+                import traceback
+                logger.error(f"     {traceback.format_exc()}")
+            else:
+                logger.error(f"❌ Error analyzing market {idx}: {e}")
+                if idx <= 20:
+                    logger.error(f"   Market: {market_question[:60]}")
             continue
     
     # Final summary
