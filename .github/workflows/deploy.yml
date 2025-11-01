@@ -151,6 +151,8 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
+      REPO: ${{ secrets.GAR_REPOSITORY }}
+      IMAGE: ${{ secrets.IMAGE_NAME }}
       CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
       POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
       SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
@@ -168,19 +170,15 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy to Cloud Run
-        env:
-          IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
         run: |
-          echo "🔍 DEBUG: Raw output from build-image job: '${{ needs.build-image.outputs.image_uri }}'"
-          echo "🔍 DEBUG: IMAGE_URI env var: '$IMAGE_URI'"
-          echo "📦 Image URI: $IMAGE_URI"
-          if [ -z "$IMAGE_URI" ]; then
-            echo "❌ ERROR: IMAGE_URI is empty!"
-            echo "🔍 Available outputs from build-image job:"
-            echo "${{ toJSON(needs.build-image.outputs) }}"
-            exit 1
-          fi
+          # Reconstruct image URI using same logic as build job
+          REPO_LC="${REPO,,}"
+          IMAGE_LC="${IMAGE,,}"
+          IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_LC/$IMAGE_LC:${{ github.sha }}"
+          
           echo "🚀 Deploying Bot A to Cloud Run..."
+          echo "📦 Using image: $IMAGE_URI"
+          
           gcloud run deploy polytrade-bot-a \
             --project $PROJECT_ID --region $REGION \
             --image "$IMAGE_URI" \
@@ -201,6 +199,8 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
+      REPO: ${{ secrets.GAR_REPOSITORY }}
+      IMAGE: ${{ secrets.IMAGE_NAME }}
       CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
       POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
       SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
@@ -219,15 +219,15 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy to Cloud Run
-        env:
-          IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
         run: |
-          echo "📦 Image URI: $IMAGE_URI"
-          if [ -z "$IMAGE_URI" ]; then
-            echo "❌ ERROR: IMAGE_URI is empty!"
-            exit 1
-          fi
+          # Reconstruct image URI using same logic as build job
+          REPO_LC="${REPO,,}"
+          IMAGE_LC="${IMAGE,,}"
+          IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_LC/$IMAGE_LC:${{ github.sha }}"
+          
           echo "🚀 Deploying Bot B to Cloud Run..."
+          echo "📦 Using image: $IMAGE_URI"
+          
           gcloud run deploy polytrade-bot-b \
             --project $PROJECT_ID --region $REGION \
             --image "$IMAGE_URI" \
@@ -248,6 +248,8 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
+      REPO: ${{ secrets.GAR_REPOSITORY }}
+      IMAGE: ${{ secrets.IMAGE_NAME }}
       CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
       POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
       SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
@@ -264,15 +266,15 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy to Cloud Run
-        env:
-          IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
         run: |
-          echo "📦 Image URI: $IMAGE_URI"
-          if [ -z "$IMAGE_URI" ]; then
-            echo "❌ ERROR: IMAGE_URI is empty!"
-            exit 1
-          fi
+          # Reconstruct image URI using same logic as build job
+          REPO_LC="${REPO,,}"
+          IMAGE_LC="${IMAGE,,}"
+          IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_LC/$IMAGE_LC:${{ github.sha }}"
+          
           echo "🚀 Deploying Analyzer to Cloud Run..."
+          echo "📦 Using image: $IMAGE_URI"
+          
           gcloud run deploy polytrade-analyzer \
             --project $PROJECT_ID --region $REGION \
             --image "$IMAGE_URI" \
@@ -293,6 +295,8 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ secrets.GCP_REGION }}
+      REPO: ${{ secrets.GAR_REPOSITORY }}
+      IMAGE: ${{ secrets.IMAGE_NAME }}
       CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
       POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
       SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
@@ -309,15 +313,15 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Deploy to Cloud Run
-        env:
-          IMAGE_URI: ${{ needs.build-image.outputs.image_uri }}
         run: |
-          echo "📦 Image URI: $IMAGE_URI"
-          if [ -z "$IMAGE_URI" ]; then
-            echo "❌ ERROR: IMAGE_URI is empty!"
-            exit 1
-          fi
+          # Reconstruct image URI using same logic as build job
+          REPO_LC="${REPO,,}"
+          IMAGE_LC="${IMAGE,,}"
+          IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_LC/$IMAGE_LC:${{ github.sha }}"
+          
           echo "🚀 Deploying Monitor to Cloud Run..."
+          echo "📦 Using image: $IMAGE_URI"
+          
           gcloud run deploy polytrade-monitor \
             --project $PROJECT_ID --region $REGION \
             --image "$IMAGE_URI" \
