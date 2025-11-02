@@ -116,18 +116,32 @@ class PolymarketClient:
                 # Get wallet address from the client
                 wallet_address = self.client.get_address()
                 logger.info(f"✅ Wallet address from client.get_address(): {wallet_address}")
+                logger.info(f"   Address length: {len(wallet_address) if wallet_address else 0} chars")
+                logger.info(f"   Starts with 0x: {wallet_address.startswith('0x') if wallet_address else False}")
                 
                 # Polymarket uses proxy wallets - positions are stored under the proxy address
                 # The proxy/funder is what actually holds the positions
                 proxy_address = settings.proxy_address if settings.proxy_address else None
-                if proxy_address:
-                    logger.info(f"ℹ️  Proxy/Funder address from settings: {proxy_address}")
+                logger.info(f"📋 Checking settings.proxy_address...")
+                logger.info(f"   Value: {proxy_address}")
+                logger.info(f"   Type: {type(proxy_address)}")
+                logger.info(f"   Is None: {proxy_address is None}")
+                logger.info(f"   Is empty string: {proxy_address == '' if proxy_address else 'N/A'}")
+                
+                if proxy_address and proxy_address.strip():
+                    logger.info(f"✅ Proxy/Funder address from settings: {proxy_address}")
+                    logger.info(f"   Address length: {len(proxy_address)} chars")
+                    logger.info(f"   Starts with 0x: {proxy_address.startswith('0x')}")
                     logger.info(f"ℹ️  Using proxy address (Polymarket positions are on proxy wallet)")
                     query_address = proxy_address
                 else:
-                    logger.warning("⚠️ No proxy address configured in settings!")
-                    logger.warning("   Positions in Polymarket are usually on proxy wallet, not EOA")
-                    logger.warning("   Trying wallet address but this might return 0 positions")
+                    logger.warning("=" * 80)
+                    logger.warning("⚠️⚠️⚠️ NO PROXY ADDRESS CONFIGURED IN SETTINGS! ⚠️⚠️⚠️")
+                    logger.warning("   Environment variable PROXY_ADDRESS is not set or empty")
+                    logger.warning("   Positions in Polymarket are on the PROXY WALLET, not EOA")
+                    logger.warning("   This is likely why you're getting 0 positions!")
+                    logger.warning("   Please set PROXY_ADDRESS environment variable")
+                    logger.warning("=" * 80)
                     query_address = wallet_address
                 
                 # IMPORTANT: sizeThreshold defaults to 1.0, set to 0 to get all positions
@@ -135,9 +149,14 @@ class PolymarketClient:
                 logger.info(f"📡 API URL: {positions_url}")
                 logger.info(f"ℹ️  Using sizeThreshold=0 to include all positions (default is 1.0)")
                 
-                logger.debug("Making HTTP GET request...")
+                logger.info("Making HTTP GET request...")
                 pos_response = httpx.get(positions_url, timeout=30.0)
                 logger.info(f"✅ Response status code: {pos_response.status_code}")
+                logger.info(f"Response headers: {dict(pos_response.headers)}")
+                
+                # Log raw response text for debugging
+                response_text = pos_response.text
+                logger.info(f"Raw response (first 500 chars): {response_text[:500]}")
                 
                 pos_response.raise_for_status()
                 positions = pos_response.json()
@@ -145,19 +164,35 @@ class PolymarketClient:
                 logger.info(f"📦 Received response with {len(positions) if isinstance(positions, list) else 'unknown'} items")
                 logger.info(f"Response type: {type(positions)}")
                 
+                # Log full response if it's small enough
+                if isinstance(positions, list) and len(positions) <= 5:
+                    import json
+                    logger.info(f"Full response: {json.dumps(positions, indent=2)}")
+                
                 # If we got 0 positions with proxy address, try with wallet address
                 if (not positions or len(positions) == 0) and proxy_address and query_address == proxy_address:
+                    logger.warning("=" * 80)
                     logger.warning("⚠️ Got 0 positions with proxy address, trying wallet address...")
                     fallback_url = f"https://data-api.polymarket.com/positions?user={wallet_address}&sizeThreshold=0"
                     logger.info(f"📡 Fallback API URL: {fallback_url}")
                     
                     pos_response = httpx.get(fallback_url, timeout=30.0)
                     logger.info(f"✅ Fallback response status code: {pos_response.status_code}")
+                    
+                    response_text = pos_response.text
+                    logger.info(f"Fallback raw response (first 500 chars): {response_text[:500]}")
+                    
                     pos_response.raise_for_status()
                     positions = pos_response.json()
                     
                     logger.info(f"📦 Fallback received {len(positions) if isinstance(positions, list) else 'unknown'} items")
+                    
+                    if isinstance(positions, list) and len(positions) <= 5:
+                        import json
+                        logger.info(f"Fallback full response: {json.dumps(positions, indent=2)}")
+                    
                     query_address = wallet_address  # Update for logging
+                    logger.warning("=" * 80)
                 
                 # Log first position structure if available
                 if positions and isinstance(positions, list) and len(positions) > 0:
@@ -174,10 +209,22 @@ class PolymarketClient:
                     logger.info("")
                 
                 if positions and isinstance(positions, list):
-                    logger.info(f"Processing {len(positions)} positions...")
-                    for i, pos in enumerate(positions):
+                    logger.info(f"Received {len(positions)} total positions from API (including historical)")
+                    
+                    # Filter out zero-value positions (closed/resolved markets)
+                    active_positions = [p for p in positions if float(p.get("currentValue", 0.0)) > 0.001]
+                    
+                    logger.info(f"Filtered to {len(active_positions)} active positions with value > $0")
+                    
+                    if len(active_positions) < len(positions):
+                        closed_count = len(positions) - len(active_positions)
+                        logger.info(f"Skipped {closed_count} closed/resolved positions with $0 value")
+                    
+                    logger.info("")
+                    
+                    for i, pos in enumerate(active_positions):
                         try:
-                            logger.info(f"  --- Position {i+1} ---")
+                            logger.info(f"  --- Active Position {i+1}/{len(active_positions)} ---")
                             
                             # Log all available fields
                             logger.debug(f"  All fields: {list(pos.keys())}")
@@ -195,6 +242,11 @@ class PolymarketClient:
                                 cur_price = float(pos.get("curPrice", 0.0))
                                 position_value = size * cur_price
                                 logger.info(f"  Calculated: size={size} × curPrice=${cur_price:.4f} = ${position_value:.2f}")
+                            
+                            # Skip if still somehow 0 (shouldn't happen after filter)
+                            if position_value < 0.001:
+                                logger.debug(f"  Skipping position with ${position_value:.2f} value")
+                                continue
                             
                             # Log position details
                             title = pos.get("title", "N/A")
