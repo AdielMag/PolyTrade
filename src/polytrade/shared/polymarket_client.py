@@ -31,7 +31,7 @@ class PolymarketClient:
         logger.info("Fetching balance and portfolio value from Polymarket...")
         try:
             # Get balance allowance from CLOB client for COLLATERAL (USDC)
-            logger.debug("Creating BalanceAllowanceParams with AssetType.COLLATERAL")
+            logger.debug("Creating BalanceAllowanceParams with AssetType.COLLATERAL ")
             params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
             
             logger.debug("Calling get_balance_allowance()...")

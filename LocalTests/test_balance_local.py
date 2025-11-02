@@ -132,6 +132,8 @@ def test_with_mock_data():
 
 def test_with_real_credentials():
     """Test with real credentials if .env exists."""
+    import os
+    
     print()
     print("=" * 80)
     print("TESTING WITH REAL CREDENTIALS")
@@ -144,6 +146,12 @@ def test_with_real_credentials():
         print("   - WALLET_PRIVATE_KEY=0x...")
         print("   - POLYMARKET_PROXY_ADDRESS=0x...")
         return
+    
+    # Reload the settings from .env to override mock values
+    from polytrade.shared import config
+    # Point to the root .env file
+    root_env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+    config.settings = config.Settings(_env_file=root_env_path)
     
     from polytrade.shared.polymarket_client import PolymarketClient
     from polytrade.shared.logging import configure_logging
