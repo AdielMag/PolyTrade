@@ -304,11 +304,44 @@ class PolymarketClient:
             logger.info(f"  📊 TOTAL PORTFOLIO: ${total_usd:.2f}")
             logger.info("=" * 80)
             
+            # Prepare detailed positions and orders for return
+            detailed_positions = []
+            detailed_orders = []
+            
+            # Store active positions with key details
+            if positions and isinstance(positions, list):
+                active_positions = [p for p in positions if float(p.get("currentValue", 0.0)) > 0.001]
+                for pos in active_positions:
+                    detailed_positions.append({
+                        "title": pos.get("title", "N/A"),
+                        "outcome": pos.get("outcome", "N/A"),
+                        "size": float(pos.get("size", 0.0)),
+                        "avgPrice": float(pos.get("avgPrice", 0.0)),
+                        "curPrice": float(pos.get("curPrice", 0.0)),
+                        "currentValue": float(pos.get("currentValue", 0.0)),
+                        "pnl": float(pos.get("cashPnl", 0.0))
+                    })
+            
+            # Store orders with key details
+            if orders:
+                for order in orders:
+                    detailed_orders.append({
+                        "market": order.get("market", "N/A"),
+                        "asset_id": order.get("asset_id", "N/A"),
+                        "side": order.get("side", "N/A"),
+                        "size": float(order.get("size", 0.0)),
+                        "price": float(order.get("price", 0.0)),
+                        "value": float(order.get("size", 0.0)) * float(order.get("price", 0.0)),
+                        "order_id": order.get("id", "N/A")
+                    })
+            
             return {
                 "available_usd": available_usd,
                 "locked_usd": locked_usd,
                 "positions_usd": positions_usd,
-                "total_usd": total_usd
+                "total_usd": total_usd,
+                "positions": detailed_positions,
+                "orders": detailed_orders
             }
         except Exception as e:
             logger.error("=" * 80)

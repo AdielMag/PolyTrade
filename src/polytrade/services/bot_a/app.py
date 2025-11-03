@@ -11,6 +11,7 @@ from .formatting import suggestion_message
 from .keyboards import amount_presets_kb, confirm_kb
 from ...shared.execution import place_trade
 from ...shared.logging import configure_logging
+from ..analyzer.analysis import run_analysis
 
 configure_logging()
 
@@ -25,21 +26,60 @@ def get_bot() -> Bot:
     return Bot(token=settings.bot_a_token)
 
 
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message) -> None:
+@dp.message(Command("balance"))
+async def cmd_balance(message: types.Message) -> None:
     try:
         # Force fresh balance fetch from Polymarket
         bal = get_current(force=True)
-        welcome_msg = (
-            f"🎯 <b>Welcome to PolyTrade Bot!</b>\n\n"
-            f"💰 <b>Portfolio: ${bal['total_usd']:.2f}</b>\n"
-            f"   💵 Available: ${bal['available_usd']:.2f}\n"
-            f"   📝 In Orders: ${bal['locked_usd']:.2f}\n"
-            f"   💎 Positions: ${bal['positions_usd']:.2f}\n\n"
-            f"📊 Use /suggest to view trade opportunities\n"
-            f"💡 Get AI-powered market analysis and execute trades instantly!"
+        
+        # Build the main balance message
+        balance_msg = (
+            f"💰 <b>Portfolio Balance</b>\n\n"
+            f"<b>Total Portfolio: ${bal['total_usd']:.2f}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"💵 Available: ${bal['available_usd']:.2f}\n"
+            f"📝 In Orders: ${bal['locked_usd']:.2f}\n"
+            f"💎 Positions: ${bal['positions_usd']:.2f}\n"
         )
-        await message.answer(welcome_msg, parse_mode="HTML")
+        
+        # Add detailed open orders if any
+        orders = bal.get("orders", [])
+        if orders:
+            balance_msg += f"\n\n<b>📝 Open Orders ({len(orders)}):</b>\n"
+            for i, order in enumerate(orders, 1):
+                side_emoji = "📈" if order['side'].upper() == "BUY" else "📉"
+                balance_msg += (
+                    f"\n{side_emoji} <b>Order #{i}</b>\n"
+                    f"├ Side: {order['side'].upper()}\n"
+                    f"├ Size: {order['size']:.2f} @ ${order['price']:.4f}\n"
+                    f"├ Value: ${order['value']:.2f}\n"
+                    f"└ Market: {order.get('market', 'N/A')[:60]}\n"
+                )
+        
+        # Add detailed positions if any
+        positions = bal.get("positions", [])
+        if positions:
+            balance_msg += f"\n\n<b>💎 Active Positions ({len(positions)}):</b>\n"
+            for i, pos in enumerate(positions, 1):
+                pnl_emoji = "📈" if pos['pnl'] >= 0 else "📉"
+                pnl_sign = "+" if pos['pnl'] >= 0 else ""
+                balance_msg += (
+                    f"\n{pnl_emoji} <b>Position #{i}</b>\n"
+                    f"├ Market: {pos['title'][:50]}...\n"
+                    f"├ Outcome: <b>{pos['outcome']}</b>\n"
+                    f"├ Size: {pos['size']:.2f} shares\n"
+                    f"├ Avg Price: ${pos['avgPrice']:.4f}\n"
+                    f"├ Current: ${pos['curPrice']:.4f}\n"
+                    f"├ Value: ${pos['currentValue']:.2f}\n"
+                    f"└ P&L: {pnl_sign}${pos['pnl']:.2f}\n"
+                )
+        
+        if not orders and not positions:
+            balance_msg += f"\n\n<i>No open orders or positions</i>\n"
+        
+        balance_msg += f"\n\n📊 Use /suggest to view trade opportunities"
+        
+        await message.answer(balance_msg, parse_mode="HTML")
     except Exception as e:
         await message.answer(
             f"⚠️ <b>Error fetching balance</b>\n\n"
@@ -52,34 +92,37 @@ async def cmd_start(message: types.Message) -> None:
 @dp.message(Command("suggest"))
 async def cmd_suggest(message: types.Message) -> None:
     try:
-        # Notify user we're fetching data
-        status_msg = await message.answer("🔄 <b>Analyzing markets...</b>", parse_mode="HTML")
+        # Notify user we're analyzing markets
+        status_msg = await message.answer("🔄 <b>Analyzing markets...</b>\n\nThis may take a moment...", parse_mode="HTML")
         
-        db = get_client()
-        snap = db.collection("suggestions").where("status", "==", "OPEN").order_by("edgeBps", direction="DESCENDING").limit(5).get()
+        # Run analyzer on demand to get fresh suggestions
+        suggestions = run_analysis(max_suggestions=5)
         
         # Delete the status message
         await status_msg.delete()
         
-        if not snap:
-            bal = get_current()
+        if not suggestions:
             no_suggestions_msg = (
-                f"💰 <b>Portfolio: ${bal['total_usd']:.2f}</b>\n"
-                f"   💵 Available: ${bal['available_usd']:.2f}\n"
-                f"   📝 In Orders: ${bal['locked_usd']:.2f}\n"
-                f"   💎 Positions: ${bal['positions_usd']:.2f}\n\n"
                 f"📭 <b>No suggestions available right now</b>\n\n"
-                f"The analyzer is constantly scanning markets.\n"
-                f"Check back soon for new opportunities! 🎯"
+                f"No markets matching our criteria were found.\n"
+                f"Try again later for new opportunities! 🎯\n\n"
+                f"💡 Use /balance to check your portfolio"
             )
             await message.answer(no_suggestions_msg, parse_mode="HTML")
             return
         
-        for doc in snap:
-            s = doc.to_dict()
-            text = suggestion_message(s.get("title", ""), s.get("side", ""), int(s.get("edgeBps", 0)))
-            kb = amount_presets_kb(suggestion_id=doc.id, token_id=s.get("tokenId", ""), side=s.get("side", ""))
-            await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        # Get the suggestion IDs from firestore to pass to keyboards
+        # The suggestions returned by run_analysis have been saved to firestore
+        # We need to query them back to get their document IDs
+        db = get_client()
+        for s in suggestions:
+            # Query for this suggestion by tokenId to get its document ID
+            snap = db.collection("suggestions").where("tokenId", "==", s.get("tokenId", "")).where("status", "==", "OPEN").limit(1).get()
+            if snap:
+                doc = snap[0]
+                text = suggestion_message(s.get("title", ""), s.get("side", ""), int(s.get("edgeBps", 0)))
+                kb = amount_presets_kb(suggestion_id=doc.id, token_id=s.get("tokenId", ""), side=s.get("side", ""))
+                await message.answer(text, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
         # User-friendly error handling
         error_msg = str(e)
@@ -197,6 +240,20 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
             f"📧 Contact support if the issue persists.",
             parse_mode="HTML"
         )
+
+
+@dp.message()
+async def handle_unknown(message: types.Message) -> None:
+    """Handle unknown commands and messages."""
+    await message.answer(
+        f"❓ <b>Command not found</b>\n\n"
+        f"I don't understand that command.\n\n"
+        f"<b>Available commands:</b>\n"
+        f"• /balance - View your portfolio\n"
+        f"• /suggest - Get trade suggestions\n\n"
+        f"💡 Try one of these commands!",
+        parse_mode="HTML"
+    )
 
 
 @app.post("/webhook")

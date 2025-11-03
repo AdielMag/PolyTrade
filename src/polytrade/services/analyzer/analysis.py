@@ -16,11 +16,18 @@ def compute_edge_bps(fair: float, ask: float) -> float:
     return (fair - ask) * 10000.0 / ask
 
 
-def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
-    """Analyze sports markets and create value-based trade suggestions."""
+def run_analysis(max_suggestions: int = 5, min_price: float = 0.70, max_price: float = 0.85) -> list[dict[str, Any]]:
+    """Analyze sports markets and create value-based trade suggestions.
+    
+    Args:
+        max_suggestions: Maximum number of suggestions to return
+        min_price: Minimum market price to consider (default 0.70 = 70 cents)
+        max_price: Maximum market price to consider (default 0.85 = 85 cents)
+    """
     logger.info("=" * 80)
     logger.info("Starting analysis run")
     logger.info(f"Max suggestions: {max_suggestions}")
+    logger.info(f"Price range filter: ${min_price:.2f} - ${max_price:.2f}")
     logger.info(f"Min liquidity threshold: ${settings.min_liquidity_usd}")
     logger.info(f"Min edge threshold: {settings.edge_bps} bps")
     logger.info("=" * 80)
@@ -56,6 +63,7 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
         "low_liquidity": 0,
         "no_quotes": 0,
         "invalid_price": 0,
+        "price_out_of_range": 0,
         "insufficient_edge": 0,
         "suggestions_created": 0,
         "errors": 0
@@ -148,6 +156,19 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
                     logger.debug(f"  ❌ Skipped: invalid ask price {current_ask} - {market_question[:60]}")
                 continue
             
+            # Check 5: Price within target range (70-85 cents)
+            if idx <= 5:
+                logger.info(f"  ✓ Check 5 - Price range: ${current_ask:.4f} (target: ${min_price:.2f}-${max_price:.2f})")
+                logger.info(f"    In range: {min_price <= current_ask <= max_price}")
+            
+            if not (min_price <= current_ask <= max_price):
+                stats["price_out_of_range"] += 1
+                if idx <= 5:
+                    logger.warning(f"  ❌ FAILED: Price ${current_ask:.4f} outside range ${min_price:.2f}-${max_price:.2f}")
+                elif idx <= 20:
+                    logger.debug(f"  ❌ Skipped: price ${current_ask:.4f} out of range - {market_question[:60]}")
+                continue
+            
             # Value-based analysis: calculate fair value
             # Simple approach: use midpoint adjusted by volume and momentum
             mid_price = (current_bid + current_ask) / 2
@@ -169,7 +190,7 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
             edge_bps = compute_edge_bps(fair_value, current_ask)
             
             if idx <= 5:
-                logger.info(f"  ✓ Check 5 - Edge: {edge_bps:.2f} bps")
+                logger.info(f"  ✓ Check 6 - Edge: {edge_bps:.2f} bps")
                 logger.info(f"    Threshold: {settings.edge_bps} bps")
                 logger.info(f"    Pass: {edge_bps >= settings.edge_bps}")
             elif idx <= 20:
@@ -192,7 +213,8 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
                     "liquidity": liquidity,
                     "expiresAt": now + 3600,  # 1 hour expiry
                     "status": "OPEN",
-                    "createdAt": now
+                    "createdAt": now,
+                    "suggestedAt": now  # Date when suggestion was created for tracking
                 }
                 add_doc("suggestions", suggestion)
                 suggestions.append(suggestion)
@@ -226,6 +248,7 @@ def run_analysis(max_suggestions: int = 5) -> list[dict[str, Any]]:
     logger.info(f"  Skipped - low liquidity: {stats['low_liquidity']}")
     logger.info(f"  Skipped - quote errors: {stats['no_quotes']}")
     logger.info(f"  Skipped - invalid prices: {stats['invalid_price']}")
+    logger.info(f"  Skipped - price out of range (${min_price:.2f}-${max_price:.2f}): {stats['price_out_of_range']}")
     logger.info(f"  Skipped - insufficient edge: {stats['insufficient_edge']}")
     logger.info(f"  Errors encountered: {stats['errors']}")
     logger.info(f"  ✅ SUGGESTIONS CREATED: {stats['suggestions_created']}")

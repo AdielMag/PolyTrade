@@ -18,8 +18,7 @@ def suggestion_message(title: str, side: str, edge_bps: int) -> str:
     edge_color = "🟢" if edge_bps > 200 else "🟡" if edge_bps > 100 else "🔵"
     
     return (
-        balance_header() + 
-        f"\n{edge_color} <b>Trade Opportunity</b>\n\n"
+        f"{edge_color} <b>Trade Opportunity</b>\n\n"
         f"🎯 <b>{title}</b>\n\n"
         f"{side_emoji} Side: <b>{side.upper()}</b>\n"
         f"📊 Edge: <b>{edge_bps}</b> bps\n\n"
