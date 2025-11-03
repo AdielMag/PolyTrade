@@ -12,23 +12,36 @@ from .config import settings
 
 
 class PolymarketClient:
-    def __init__(self) -> None:
-        if not settings.wallet_private_key:
-            raise RuntimeError("WALLET_PRIVATE_KEY is required")
-        self.client = ClobClient(
-            settings.clob_host,
-            key=settings.wallet_private_key,
-            chain_id=settings.chain_id,
-            signature_type=settings.signature_type,
-            funder=settings.proxy_address,
-        )
-        # derive and set API creds
-        self.client.set_api_creds(self.client.create_or_derive_api_creds())
+    def __init__(self, require_auth: bool = True) -> None:
+        """Initialize PolymarketClient.
+        
+        Args:
+            require_auth: If True, requires wallet credentials for authenticated operations.
+                         If False, only read-only public operations are available.
+        """
+        self.client = None
+        self.require_auth = require_auth
+        
+        if require_auth:
+            if not settings.wallet_private_key:
+                raise RuntimeError("WALLET_PRIVATE_KEY is required")
+            self.client = ClobClient(
+                settings.clob_host,
+                key=settings.wallet_private_key,
+                chain_id=settings.chain_id,
+                signature_type=settings.signature_type,
+                funder=settings.proxy_address,
+            )
+            # derive and set API creds
+            self.client.set_api_creds(self.client.create_or_derive_api_creds())
 
     def get_balance(self) -> dict[str, float]:
         """Get current USDC balance and portfolio value from Polymarket CLOB."""
+        if not self.client:
+            raise RuntimeError("Authenticated client required for get_balance()")
+        
         logger.info("=" * 80)
-        logger.info("Fetching balance and portfolio value from Polymarket... ")
+        logger.info("Fetching balance and portfolio value from Polymarket...")
         try:
             # Get balance allowance from CLOB client for COLLATERAL (USDC)
             logger.debug("Creating BalanceAllowanceParams with AssetType.COLLATERAL ")
@@ -393,20 +406,13 @@ class PolymarketClient:
                 logger.debug(f"  Question: {first_market.get('question', 'N/A')[:80]}")
                 logger.debug(f"  Has 'tokens' field: {'tokens' in first_market}")
                 
-                if 'tokens' in first_market:
-                    tokens = first_market.get('tokens', [])
-                    logger.debug(f"  Tokens count: {len(tokens)}")
-                    if tokens:
-                        logger.debug(f"  First token keys: {list(tokens[0].keys()) if tokens else 'N/A'}")
+                if 'clobTokenIds' in first_market:
+                    clob_token_ids = first_market.get('clobTokenIds', [])
+                    logger.debug(f"  clobTokenIds count: {len(clob_token_ids)}")
+                    if clob_token_ids:
+                        logger.debug(f"  First token ID: {clob_token_ids[0]}")
                 else:
-                    # Check for alternative field names
-                    logger.debug(f"  ⚠️ No 'tokens' field found. Checking alternatives...")
-                    potential_fields = ['outcomes', 'markets', 'options', 'sides', 'clobTokenIds']
-                    for field in potential_fields:
-                        if field in first_market:
-                            logger.debug(f"  Found alternative field '{field}': {type(first_market[field])}")
-                            if isinstance(first_market[field], list) and first_market[field]:
-                                logger.debug(f"    First item: {first_market[field][0]}")
+                    logger.debug(f"  ⚠️ No 'clobTokenIds' field found in this market")
                 
                 # Log full first market for debugging (truncated)
                 import json
@@ -416,11 +422,11 @@ class PolymarketClient:
                 logger.debug(f"  Full first market:\n{market_json}")
                 logger.debug("=" * 80)
                 
-                # Count how many markets have tokens
-                with_tokens = sum(1 for m in markets if m.get('tokens'))
+                # Count how many markets have clobTokenIds
+                with_tokens = sum(1 for m in markets if m.get('clobTokenIds'))
                 without_tokens = len(markets) - with_tokens
-                logger.info(f"  Markets with 'tokens' field: {with_tokens}")
-                logger.info(f"  Markets WITHOUT 'tokens' field: {without_tokens}")
+                logger.info(f"  Markets with 'clobTokenIds' field: {with_tokens}")
+                logger.info(f"  Markets WITHOUT 'clobTokenIds' field: {without_tokens}")
             
             return markets if isinstance(markets, list) else []
             
@@ -432,10 +438,21 @@ class PolymarketClient:
             return []
 
     def get_quotes(self, token_id: str) -> dict[str, Any]:
-        """Get current best bid/ask prices from CLOB order book."""
+        """Get current best bid/ask prices from CLOB order book.
+        
+        Fetches publicly available order book data - no authentication required.
+        """
         try:
-            # Use CLOB client to get order book
-            book = self.client.get_order_book(token_id)
+            if self.client:
+                # Use authenticated CLOB client if available
+                book = self.client.get_order_book(token_id)
+            else:
+                # Use public API for order book (no auth required)
+                import httpx
+                url = f"https://clob.polymarket.com/book?token_id={token_id}"
+                response = httpx.get(url, timeout=10.0)
+                response.raise_for_status()
+                book = response.json()
             
             # Extract best bid and ask
             bids = book.get("bids", [])
@@ -455,6 +472,9 @@ class PolymarketClient:
             return {"best_bid": 0.0, "best_ask": 0.0, "ts": int(time.time())}
 
     def place_order(self, token_id: str, side: str, price: float, size: float) -> dict[str, Any]:
+        if not self.client:
+            raise RuntimeError("Authenticated client required for place_order()")
+            
         side_const = BUY if side.upper().startswith("BUY") else SELL
         order_args = OrderArgs(price=price, size=size, side=side_const, token_id=token_id)
         signed = self.client.create_order(order_args)
@@ -463,6 +483,9 @@ class PolymarketClient:
         return {"ok": True, "resp": resp}
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:
+        if not self.client:
+            raise RuntimeError("Authenticated client required for cancel_order()")
+            
         try:
             resp = self.client.cancel_order(order_id)
             return {"ok": True, "resp": resp}

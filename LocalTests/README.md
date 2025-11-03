@@ -37,6 +37,23 @@ python LocalTests/test_balance_local.py
 - Tests with real credentials if `.env` file exists
 - Shows detailed logs of the balance fetching process
 
+### `test_analyzer_local.py`
+Runs the analyzer locally to debug why suggestions are or aren't being generated.
+
+**Usage:**
+```bash
+python LocalTests/test_analyzer_local.py
+```
+
+**Features:**
+- Fetches real sports markets from Polymarket
+- Shows detailed filtering at each step
+- Explains why markets are filtered out
+- Displays generated suggestions with all details
+- Helps debug: no suggestions, price ranges, liquidity, edge thresholds
+
+**Requirements:** `.env` file with `WALLET_PRIVATE_KEY` and `POLYMARKET_PROXY_ADDRESS`
+
 ## Setup
 
 1. Copy `.env.example` to `.env` (if you have one)

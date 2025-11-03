@@ -16,7 +16,7 @@ def compute_edge_bps(fair: float, ask: float) -> float:
     return (fair - ask) * 10000.0 / ask
 
 
-def run_analysis(max_suggestions: int = 5, min_price: float = 0.70, max_price: float = 0.85) -> list[dict[str, Any]]:
+def run_analysis(max_suggestions: int = 5, min_price: float = 0.01, max_price: float = 0.99) -> list[dict[str, Any]]:
     """Analyze SPORTS markets from Polymarket ONLY and create trade suggestions.
     
     Only analyzes sports-related markets from Polymarket Gamma API.
@@ -24,8 +24,8 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.70, max_price: f
     
     Args:
         max_suggestions: Maximum number of suggestions to return
-        min_price: Minimum market price to consider (default 0.70 = 70 cents)
-        max_price: Maximum market price to consider (default 0.85 = 85 cents)
+        min_price: Minimum market price to consider (default 0.01 = 1 cent, essentially no lower limit)
+        max_price: Maximum market price to consider (default 0.99 = 99 cents, essentially no upper limit)
     """
     logger.info("=" * 80)
     logger.info("Starting SPORTS MARKETS analysis (Polymarket only)")
@@ -35,7 +35,9 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.70, max_price: f
     logger.info(f"Min edge threshold: {settings.edge_bps} bps")
     logger.info("=" * 80)
     
-    client = PolymarketClient()
+    # Create client without authentication for read-only market fetching
+    # Authentication is only needed for trading operations
+    client = PolymarketClient(require_auth=False)
     logger.info("Fetching SPORTS markets from Polymarket Gamma API...")
     markets = client.list_markets()
     logger.info(f"✅ Fetched {len(markets)} sports markets from Polymarket")
@@ -46,14 +48,14 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.70, max_price: f
         logger.info("=" * 80)
         logger.info("ANALYZING FIRST MARKET STRUCTURE:")
         logger.info(f"  Question: {first_market.get('question', 'N/A')[:80]}")
-        logger.info(f"  Has 'tokens': {('tokens' in first_market)}")
-        logger.info(f"  Has 'liquidity': {('liquidity' in first_market)}")
-        logger.info(f"  Liquidity value: {first_market.get('liquidity', 'N/A')}")
-        if 'tokens' in first_market:
-            tokens = first_market.get('tokens', [])
-            logger.info(f"  Tokens count: {len(tokens)}")
-            if tokens:
-                logger.info(f"  First token_id: {tokens[0].get('token_id', 'N/A')}")
+        logger.info(f"  Has 'clobTokenIds': {('clobTokenIds' in first_market)}")
+        logger.info(f"  Has 'liquidityClob': {('liquidityClob' in first_market)}")
+        logger.info(f"  Liquidity value: {first_market.get('liquidityClob', 'N/A')}")
+        if 'clobTokenIds' in first_market:
+            clob_token_ids = first_market.get('clobTokenIds', [])
+            logger.info(f"  clobTokenIds count: {len(clob_token_ids)}")
+            if clob_token_ids:
+                logger.info(f"  First token_id: {clob_token_ids[0]}")
         logger.info("=" * 80)
     
     suggestions: list[dict[str, Any]] = []
@@ -91,31 +93,42 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.70, max_price: f
             elif idx % 50 == 0:  # Then log every 50th
                 logger.info(f"Progress: analyzed {idx}/{len(markets)} markets so far")
             
-            # Check 1: Tokens
-            tokens = market.get("tokens", [])
-            if idx <= 5:
-                logger.info(f"  ✓ Check 1 - Tokens: {len(tokens)} found")
+            # Check 1: clobTokenIds (Polymarket uses this field name)
+            # Note: clobTokenIds may be a JSON string, need to parse it
+            clob_token_ids_raw = market.get("clobTokenIds", [])
             
-            if not tokens:
+            # Parse if it's a string
+            if isinstance(clob_token_ids_raw, str):
+                try:
+                    import json
+                    clob_token_ids = json.loads(clob_token_ids_raw)
+                except (json.JSONDecodeError, ValueError):
+                    clob_token_ids = []
+            else:
+                clob_token_ids = clob_token_ids_raw if clob_token_ids_raw else []
+            
+            if idx <= 5:
+                logger.info(f"  ✓ Check 1 - clobTokenIds: {len(clob_token_ids)} found")
+            
+            if not clob_token_ids or len(clob_token_ids) == 0:
                 stats["no_tokens"] += 1
                 if idx <= 5:
-                    logger.warning(f"  ❌ FAILED: No tokens in this market")
+                    logger.warning(f"  ❌ FAILED: No clobTokenIds in this market")
                 elif idx <= 20:
-                    logger.debug(f"  ❌ Skipped: no tokens - {market_question[:60]}")
+                    logger.debug(f"  ❌ Skipped: no clobTokenIds - {market_question[:60]}")
                 continue
                 
-            # Get YES token (typically first token)
-            yes_token = tokens[0]
-            token_id = yes_token.get("token_id", "")
+            # Get YES token (typically first token ID in the array)
+            token_id = clob_token_ids[0]
             
             if idx <= 5:
                 logger.info(f"  ✓ Token ID: {token_id}")
             
-            # Check 2: Liquidity
-            liquidity = float(market.get("liquidity", 0))
+            # Check 2: Liquidity (use liquidityClob field from Polymarket)
+            liquidity = float(market.get("liquidityClob", 0))
             
             if idx <= 5:
-                logger.info(f"  ✓ Check 2 - Liquidity: ${liquidity:.2f}")
+                logger.info(f"  ✓ Check 2 - Liquidity (liquidityClob): ${liquidity:.2f}")
                 logger.info(f"    Threshold: ${settings.min_liquidity_usd}")
                 logger.info(f"    Pass: {liquidity >= settings.min_liquidity_usd}")
             
