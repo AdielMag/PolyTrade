@@ -21,59 +21,105 @@ jobs:
       - name: Detect changed directories
         id: changes
         run: |
-          # Get list of changed files between HEAD and previous commit
-          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD)
-          echo "Changed files:"
-          echo "$CHANGED_FILES"
+          set +e  # Don't exit on error - we'll handle failures gracefully
           
           # Initialize deployment flags
           DEPLOY_BOT_A=false
           DEPLOY_BOT_B=false
           DEPLOY_ANALYZER=false
           DEPLOY_MONITOR=false
+          DEPLOY_ALL=false
           
-          # Check if shared directory changed -> deploy all services
-          if echo "$CHANGED_FILES" | grep -q "^src/polytrade/shared/"; then
-            echo "✅ Shared code changed - deploying all services"
+          # Check if we have a previous commit to compare to
+          if ! git rev-parse HEAD^ >/dev/null 2>&1; then
+            echo "⚠️  No previous commit found (possibly first commit)"
+            echo "📦 Deploying all services as a safety measure"
+            DEPLOY_ALL=true
+          else
+            # Try to get list of changed files between HEAD and previous commit
+            CHANGED_FILES=$(git diff --name-only HEAD^ HEAD 2>&1)
+            EXIT_CODE=$?
+            
+            if [ $EXIT_CODE -ne 0 ]; then
+              echo "⚠️  Failed to detect changed files (exit code: $EXIT_CODE)"
+              echo "📦 Deploying all services as a safety measure"
+              echo "Error output: $CHANGED_FILES"
+              DEPLOY_ALL=true
+            else
+              echo "✅ Successfully detected changed files:"
+              echo "$CHANGED_FILES"
+              echo ""
+              
+              # Check if we got any changed files
+              if [ -z "$CHANGED_FILES" ]; then
+                echo "⚠️  No changed files detected"
+                echo "📦 Deploying all services as a safety measure"
+                DEPLOY_ALL=true
+              fi
+            fi
+          fi
+          
+          # If we need to deploy all, set all flags and skip individual checks
+          if [ "$DEPLOY_ALL" = "true" ]; then
             DEPLOY_BOT_A=true
             DEPLOY_BOT_B=true
             DEPLOY_ANALYZER=true
             DEPLOY_MONITOR=true
+          else
+            # Individual directory checks - proceed normally
+            
+            # Check if shared directory changed -> deploy all services
+            if echo "$CHANGED_FILES" | grep -q "^src/polytrade/shared/"; then
+              echo "✅ Shared code changed - deploying all services"
+              DEPLOY_BOT_A=true
+              DEPLOY_BOT_B=true
+              DEPLOY_ANALYZER=true
+              DEPLOY_MONITOR=true
+            fi
+            
+            # Check service-specific changes
+            if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/bot_a/"; then
+              echo "✅ Bot A code changed"
+              DEPLOY_BOT_A=true
+            fi
+            
+            if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/bot_b/"; then
+              echo "✅ Bot B code changed"
+              DEPLOY_BOT_B=true
+              # Monitor depends on Bot B, so deploy it too
+              DEPLOY_MONITOR=true
+            fi
+            
+            if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/analyzer/"; then
+              echo "✅ Analyzer code changed"
+              DEPLOY_ANALYZER=true
+            fi
+            
+            if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/monitor/"; then
+              echo "✅ Monitor code changed"
+              DEPLOY_MONITOR=true
+            fi
+            
+            # Check if Dockerfile or dependencies changed -> deploy all
+            if echo "$CHANGED_FILES" | grep -qE "^(Dockerfile|pyproject.toml|poetry.lock|requirements.txt)"; then
+              echo "✅ Docker or dependencies changed - deploying all services"
+              DEPLOY_BOT_A=true
+              DEPLOY_BOT_B=true
+              DEPLOY_ANALYZER=true
+              DEPLOY_MONITOR=true
+            fi
+            
+            # Check if workflow file itself changed -> deploy all
+            if echo "$CHANGED_FILES" | grep -q "^.github/workflows/"; then
+              echo "✅ Workflow changed - deploying all services"
+              DEPLOY_BOT_A=true
+              DEPLOY_BOT_B=true
+              DEPLOY_ANALYZER=true
+              DEPLOY_MONITOR=true
+            fi
           fi
           
-          # Check service-specific changes
-          if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/bot_a/"; then
-            echo "✅ Bot A code changed"
-            DEPLOY_BOT_A=true
-          fi
-          
-          if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/bot_b/"; then
-            echo "✅ Bot B code changed"
-            DEPLOY_BOT_B=true
-            # Monitor depends on Bot B, so deploy it too
-            DEPLOY_MONITOR=true
-          fi
-          
-          if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/analyzer/"; then
-            echo "✅ Analyzer code changed"
-            DEPLOY_ANALYZER=true
-          fi
-          
-          if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/monitor/"; then
-            echo "✅ Monitor code changed"
-            DEPLOY_MONITOR=true
-          fi
-          
-          # Check if Dockerfile or dependencies changed -> deploy all
-          if echo "$CHANGED_FILES" | grep -qE "^(Dockerfile|pyproject.toml|poetry.lock)"; then
-            echo "✅ Docker or dependencies changed - deploying all services"
-            DEPLOY_BOT_A=true
-            DEPLOY_BOT_B=true
-            DEPLOY_ANALYZER=true
-            DEPLOY_MONITOR=true
-          fi
-          
-          # Set outputs
+          # Set outputs (always succeeds)
           echo "deploy_bot_a=$DEPLOY_BOT_A" >> $GITHUB_OUTPUT
           echo "deploy_bot_b=$DEPLOY_BOT_B" >> $GITHUB_OUTPUT
           echo "deploy_analyzer=$DEPLOY_ANALYZER" >> $GITHUB_OUTPUT
@@ -82,15 +128,19 @@ jobs:
           # Check if any service needs deployment
           if [ "$DEPLOY_BOT_A" = "true" ] || [ "$DEPLOY_BOT_B" = "true" ] || [ "$DEPLOY_ANALYZER" = "true" ] || [ "$DEPLOY_MONITOR" = "true" ]; then
             echo "needs_deployment=true" >> $GITHUB_OUTPUT
+            echo ""
             echo "📦 Services to deploy:"
-            [ "$DEPLOY_BOT_A" = "true" ] && echo "  - Bot A"
-            [ "$DEPLOY_BOT_B" = "true" ] && echo "  - Bot B"
-            [ "$DEPLOY_ANALYZER" = "true" ] && echo "  - Analyzer"
-            [ "$DEPLOY_MONITOR" = "true" ] && echo "  - Monitor"
+            [ "$DEPLOY_BOT_A" = "true" ] && echo "  ✓ Bot A"
+            [ "$DEPLOY_BOT_B" = "true" ] && echo "  ✓ Bot B"
+            [ "$DEPLOY_ANALYZER" = "true" ] && echo "  ✓ Analyzer"
+            [ "$DEPLOY_MONITOR" = "true" ] && echo "  ✓ Monitor"
           else
             echo "needs_deployment=false" >> $GITHUB_OUTPUT
             echo "⏭️  No services need deployment"
           fi
+          
+          # Always exit successfully - we handle errors gracefully
+          exit 0
 
   build-image:
     name: Build Docker Image

@@ -28,7 +28,7 @@ class PolymarketClient:
     def get_balance(self) -> dict[str, float]:
         """Get current USDC balance and portfolio value from Polymarket CLOB."""
         logger.info("=" * 80)
-        logger.info("Fetching balance and portfolio value from Polymarket...")
+        logger.info("Fetching balance and portfolio value from Polymarket... ")
         try:
             # Get balance allowance from CLOB client for COLLATERAL (USDC)
             logger.debug("Creating BalanceAllowanceParams with AssetType.COLLATERAL ")
