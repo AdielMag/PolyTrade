@@ -35,49 +35,74 @@ async def cmd_balance(message: types.Message) -> None:
         # Build the main balance message
         balance_msg = (
             f"💰 <b>Portfolio Balance</b>\n\n"
-            f"<b>Total Portfolio: ${bal['total_usd']:.2f}</b>\n"
+            f"<b>Total: ${bal['total_usd']:.2f}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"💵 Available: ${bal['available_usd']:.2f}\n"
             f"📝 In Orders: ${bal['locked_usd']:.2f}\n"
             f"💎 Positions: ${bal['positions_usd']:.2f}\n"
         )
         
-        # Add detailed open orders if any
+        # Add detailed open orders if any (limit to 5 per message)
         orders = bal.get("orders", [])
+        max_orders_to_show = 5
         if orders:
+            orders_to_show = orders[:max_orders_to_show]
             balance_msg += f"\n\n<b>📝 Open Orders ({len(orders)}):</b>\n"
-            for i, order in enumerate(orders, 1):
+            for i, order in enumerate(orders_to_show, 1):
                 side_emoji = "📈" if order['side'].upper() == "BUY" else "📉"
+                market_name = order.get('market', 'N/A')
+                if len(market_name) > 35:
+                    market_name = market_name[:32] + "..."
                 balance_msg += (
-                    f"\n{side_emoji} <b>Order #{i}</b>\n"
-                    f"├ Side: {order['side'].upper()}\n"
-                    f"├ Size: {order['size']:.2f} @ ${order['price']:.4f}\n"
-                    f"├ Value: ${order['value']:.2f}\n"
-                    f"└ Market: {order.get('market', 'N/A')[:60]}\n"
+                    f"\n{side_emoji} <b>#{i}</b> {order['side'][:3]} "
+                    f"{order['size']:.1f}@${order['price']:.3f} "
+                    f"(${order['value']:.2f})\n"
+                    f"  {market_name}\n"
                 )
+            if len(orders) > max_orders_to_show:
+                balance_msg += f"<i>...and {len(orders) - max_orders_to_show} more</i>\n"
         
-        # Add detailed positions if any
+        # Add detailed positions if any (limit to 5 per message)
         positions = bal.get("positions", [])
+        max_positions_to_show = 5
         if positions:
-            balance_msg += f"\n\n<b>💎 Active Positions ({len(positions)}):</b>\n"
-            for i, pos in enumerate(positions, 1):
+            positions_to_show = positions[:max_positions_to_show]
+            balance_msg += f"\n\n<b>💎 Positions ({len(positions)}):</b>\n"
+            for i, pos in enumerate(positions_to_show, 1):
                 pnl_emoji = "📈" if pos['pnl'] >= 0 else "📉"
                 pnl_sign = "+" if pos['pnl'] >= 0 else ""
+                market_name = pos['title']
+                if len(market_name) > 35:
+                    market_name = market_name[:32] + "..."
                 balance_msg += (
-                    f"\n{pnl_emoji} <b>Position #{i}</b>\n"
-                    f"├ Market: {pos['title'][:50]}...\n"
-                    f"├ Outcome: <b>{pos['outcome']}</b>\n"
-                    f"├ Size: {pos['size']:.2f} shares\n"
-                    f"├ Avg Price: ${pos['avgPrice']:.4f}\n"
-                    f"├ Current: ${pos['curPrice']:.4f}\n"
-                    f"├ Value: ${pos['currentValue']:.2f}\n"
-                    f"└ P&L: {pnl_sign}${pos['pnl']:.2f}\n"
+                    f"\n{pnl_emoji} <b>#{i}</b> {pos['outcome']}: "
+                    f"${pos['currentValue']:.2f} "
+                    f"({pnl_sign}${pos['pnl']:.2f})\n"
+                    f"  {market_name}\n"
+                    f"  {pos['size']:.1f}sh @ ${pos['avgPrice']:.3f}→${pos['curPrice']:.3f}\n"
                 )
+            if len(positions) > max_positions_to_show:
+                balance_msg += f"<i>...and {len(positions) - max_positions_to_show} more</i>\n"
         
         if not orders and not positions:
             balance_msg += f"\n\n<i>No open orders or positions</i>\n"
         
-        balance_msg += f"\n\n📊 Use /suggest to view trade opportunities"
+        balance_msg += f"\n\n📊 /suggest for trade opportunities"
+        
+        # Ensure message is under Telegram's 4096 character limit
+        if len(balance_msg) > 4000:
+            # If still too long, truncate positions/orders more aggressively
+            balance_msg = (
+                f"💰 <b>Portfolio Balance</b>\n\n"
+                f"<b>Total: ${bal['total_usd']:.2f}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"💵 Available: ${bal['available_usd']:.2f}\n"
+                f"📝 In Orders: ${bal['locked_usd']:.2f} ({len(orders)} orders)\n"
+                f"💎 Positions: ${bal['positions_usd']:.2f} ({len(positions)} positions)\n\n"
+                f"<i>Too many items to display details.\n"
+                f"Summary view only.</i>\n\n"
+                f"📊 /suggest for trade opportunities"
+            )
         
         await message.answer(balance_msg, parse_mode="HTML")
     except Exception as e:
