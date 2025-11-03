@@ -17,7 +17,10 @@ def compute_edge_bps(fair: float, ask: float) -> float:
 
 
 def run_analysis(max_suggestions: int = 5, min_price: float = 0.70, max_price: float = 0.85) -> list[dict[str, Any]]:
-    """Analyze sports markets and create value-based trade suggestions.
+    """Analyze SPORTS markets from Polymarket ONLY and create trade suggestions.
+    
+    Only analyzes sports-related markets from Polymarket Gamma API.
+    Does NOT check external data sources or non-sports markets.
     
     Args:
         max_suggestions: Maximum number of suggestions to return
@@ -25,7 +28,7 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.70, max_price: f
         max_price: Maximum market price to consider (default 0.85 = 85 cents)
     """
     logger.info("=" * 80)
-    logger.info("Starting analysis run")
+    logger.info("Starting SPORTS MARKETS analysis (Polymarket only)")
     logger.info(f"Max suggestions: {max_suggestions}")
     logger.info(f"Price range filter: ${min_price:.2f} - ${max_price:.2f}")
     logger.info(f"Min liquidity threshold: ${settings.min_liquidity_usd}")
@@ -33,9 +36,9 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.70, max_price: f
     logger.info("=" * 80)
     
     client = PolymarketClient()
-    logger.info("Fetching markets from Polymarket...")
+    logger.info("Fetching SPORTS markets from Polymarket Gamma API...")
     markets = client.list_markets()
-    logger.info(f"Fetched {len(markets)} total markets")
+    logger.info(f"✅ Fetched {len(markets)} sports markets from Polymarket")
     
     # Check first market structure
     if markets:
@@ -169,22 +172,20 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.70, max_price: f
                     logger.debug(f"  ❌ Skipped: price ${current_ask:.4f} out of range - {market_question[:60]}")
                 continue
             
-            # Value-based analysis: calculate fair value
-            # Simple approach: use midpoint adjusted by volume and momentum
+            # Value-based analysis: calculate fair value using ONLY Polymarket data
+            # We use the market mid-price from Polymarket as the fair value
+            # No external data sources (bookmakers, stats sites, etc.) are used
             mid_price = (current_bid + current_ask) / 2
             
             if idx <= 5:
-                logger.info(f"  ✓ Mid price: ${mid_price:.4f}")
+                logger.info(f"  ✓ Mid price (from Polymarket): ${mid_price:.4f}")
             
-            # Calculate implied probability from market price
-            implied_prob = mid_price
-            
-            # Fair value estimation (simplified)
-            # In real implementation, fetch external odds or stats
-            fair_value = implied_prob  # Placeholder: use external data source
+            # Fair value = mid price from Polymarket order book
+            # This represents the market consensus on Polymarket
+            fair_value = mid_price
             
             if idx <= 5:
-                logger.info(f"  ✓ Fair value: ${fair_value:.4f} (currently using mid_price as placeholder)")
+                logger.info(f"  ✓ Fair value: ${fair_value:.4f} (using Polymarket mid-price)")
             
             # Calculate edge in basis points
             edge_bps = compute_edge_bps(fair_value, current_ask)

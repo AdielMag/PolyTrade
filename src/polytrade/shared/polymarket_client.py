@@ -211,14 +211,15 @@ class PolymarketClient:
                 if positions and isinstance(positions, list):
                     logger.info(f"Received {len(positions)} total positions from API (including historical)")
                     
-                    # Filter out zero-value positions (closed/resolved markets)
-                    active_positions = [p for p in positions if float(p.get("currentValue", 0.0)) > 0.001]
+                    # Filter out positions worth less than $0.02 (dust/negligible positions)
+                    MIN_POSITION_VALUE = 0.02
+                    active_positions = [p for p in positions if float(p.get("currentValue", 0.0)) >= MIN_POSITION_VALUE]
                     
-                    logger.info(f"Filtered to {len(active_positions)} active positions with value > $0")
+                    logger.info(f"Filtered to {len(active_positions)} active positions with value >= ${MIN_POSITION_VALUE}")
                     
                     if len(active_positions) < len(positions):
-                        closed_count = len(positions) - len(active_positions)
-                        logger.info(f"Skipped {closed_count} closed/resolved positions with $0 value")
+                        filtered_count = len(positions) - len(active_positions)
+                        logger.info(f"Skipped {filtered_count} positions with value < ${MIN_POSITION_VALUE} (dust/closed positions)")
                     
                     logger.info("")
                     
@@ -243,9 +244,10 @@ class PolymarketClient:
                                 position_value = size * cur_price
                                 logger.info(f"  Calculated: size={size} × curPrice=${cur_price:.4f} = ${position_value:.2f}")
                             
-                            # Skip if still somehow 0 (shouldn't happen after filter)
-                            if position_value < 0.001:
-                                logger.debug(f"  Skipping position with ${position_value:.2f} value")
+                            # Skip if below minimum threshold (shouldn't happen after filter)
+                            MIN_POSITION_VALUE = 0.02
+                            if position_value < MIN_POSITION_VALUE:
+                                logger.debug(f"  Skipping dust position with ${position_value:.2f} value (< ${MIN_POSITION_VALUE})")
                                 continue
                             
                             # Log position details
@@ -308,9 +310,10 @@ class PolymarketClient:
             detailed_positions = []
             detailed_orders = []
             
-            # Store active positions with key details
+            # Store active positions with key details (filter out dust < $0.02)
+            MIN_POSITION_VALUE = 0.02
             if positions and isinstance(positions, list):
-                active_positions = [p for p in positions if float(p.get("currentValue", 0.0)) > 0.001]
+                active_positions = [p for p in positions if float(p.get("currentValue", 0.0)) >= MIN_POSITION_VALUE]
                 for pos in active_positions:
                     detailed_positions.append({
                         "title": pos.get("title", "N/A"),
@@ -354,21 +357,26 @@ class PolymarketClient:
             return {"available_usd": 0.0, "locked_usd": 0.0, "positions_usd": 0.0, "total_usd": 0.0}
 
     def list_markets(self) -> list[dict[str, Any]]:
-        """Fetch active sports markets from Polymarket Gamma API."""
+        """Fetch active SPORTS markets ONLY from Polymarket Gamma API.
+        
+        Returns only sports-tagged markets that are active and not closed.
+        Does NOT fetch from any external sources - Polymarket only.
+        """
         try:
             import httpx
             
-            # Gamma API endpoint for markets
+            # Gamma API endpoint for markets - Polymarket only
             url = "https://gamma-api.polymarket.com/markets"
             params = {
                 "active": "true",
                 "closed": "false", 
-                "tag": "sports",  # Filter for sports markets only
+                "tag": "sports",  # ONLY sports markets - no politics, crypto, etc.
                 "limit": 100
             }
             
-            logger.info(f"Fetching markets from Gamma API: {url}")
+            logger.info(f"Fetching SPORTS markets from Polymarket Gamma API: {url}")
             logger.debug(f"Request params: {params}")
+            logger.info("📊 Using Polymarket data only - no external sources")
             
             response = httpx.get(url, params=params, timeout=30.0)
             response.raise_for_status()
