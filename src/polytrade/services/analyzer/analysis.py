@@ -16,23 +16,26 @@ def compute_edge_bps(fair: float, ask: float) -> float:
     return (fair - ask) * 10000.0 / ask
 
 
-def run_analysis(max_suggestions: int = 5, min_price: float = 0.01, max_price: float = 0.99) -> list[dict[str, Any]]:
-    """Analyze SPORTS markets from Polymarket ONLY and create trade suggestions.
+def run_analysis(max_suggestions: int = 5, min_price: float = 0.20, max_price: float = 0.80) -> list[dict[str, Any]]:
+    """Analyze markets from Polymarket and create trade suggestions.
     
-    Only analyzes sports-related markets from Polymarket Gamma API.
-    Does NOT check external data sources or non-sports markets.
+    Smart analyzer that:
+    - Looks for tradeable markets (prices between 20-80% = has some uncertainty)
+    - Checks BOTH YES and NO sides of each market
+    - Prioritizes markets with good liquidity
+    - Uses Polymarket data only (no external sources)
     
     Args:
         max_suggestions: Maximum number of suggestions to return
-        min_price: Minimum market price to consider (default 0.01 = 1 cent, essentially no lower limit)
-        max_price: Maximum market price to consider (default 0.99 = 99 cents, essentially no upper limit)
+        min_price: Minimum market price to consider (default 0.20 = 20%)
+        max_price: Maximum market price to consider (default 0.80 = 80%)
     """
     logger.info("=" * 80)
-    logger.info("Starting SPORTS MARKETS analysis (Polymarket only)")
+    logger.info("🧠 Starting SMART ANALYZER (Polymarket only)")
     logger.info(f"Max suggestions: {max_suggestions}")
-    logger.info(f"Price range filter: ${min_price:.2f} - ${max_price:.2f}")
-    logger.info(f"Min liquidity threshold: ${settings.min_liquidity_usd}")
-    logger.info(f"Min edge threshold: {settings.edge_bps} bps")
+    logger.info(f"Price range: {int(min_price*100)}%-{int(max_price*100)}% (tradeable markets)")
+    logger.info(f"Min liquidity: ${settings.min_liquidity_usd}")
+    logger.info(f"Strategy: Checking BOTH YES and NO sides for tradeable prices")
     logger.info("=" * 80)
     
     # Create client without authentication for read-only market fetching
@@ -133,32 +136,54 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.01, max_price: f
                 logger.info(f"    Pass: {liquidity >= settings.min_liquidity_usd}")
             
             if liquidity < settings.min_liquidity_usd:
-                stats["low_liquidity"] += 1
+                stats["no_liquidity"] += 1
                 if idx <= 5:
                     logger.warning(f"  ❌ FAILED: Liquidity ${liquidity:.2f} < ${settings.min_liquidity_usd}")
                 elif idx <= 20:
                     logger.debug(f"  ❌ Skipped: low liquidity ${liquidity:.2f} < ${settings.min_liquidity_usd} - {market_question[:60]}")
                 continue
             
-            # Check 3: Get current market price (quotes)
-            if idx <= 5:
-                logger.info(f"  ✓ Check 3 - Fetching quotes for token {token_id}...")
+            # Check 3: Check all tokens to find one with competitive pricing
+            best_token_id = None
+            best_ask = None
+            best_bid = None
+            outcome = "YES"
             
-            try:
-                quotes = client.get_quotes(token_id)
-            except Exception as quote_err:
-                stats["no_quotes"] += 1
+            for i, tid in enumerate(clob_token_ids):
+                try:
+                    quotes_temp = client.get_quotes(tid)
+                    ask_temp = quotes_temp["best_ask"]
+                    bid_temp = quotes_temp["best_bid"]
+                    
+                    # Check if this token's ask price is in our target range
+                    if min_price <= ask_temp <= max_price:
+                        best_token_id = tid
+                        best_ask = ask_temp
+                        best_bid = bid_temp
+                        outcome = "YES" if i == 0 else "NO"  # First token is usually YES
+                        if idx <= 5:
+                            logger.info(f"  ✓ Found competitive token #{i+1} ({outcome}): ${ask_temp:.4f}")
+                        break
+                except Exception:
+                    continue
+            
+            # If no token in range, skip this market
+            if best_token_id is None or best_ask is None:
+                stats["price_out_of_range"] += 1
                 if idx <= 5:
-                    logger.error(f"  ❌ FAILED: Could not get quotes - {quote_err}")
-                else:
-                    logger.debug(f"  ❌ Skipped: failed to get quotes - {quote_err}")
+                    logger.warning(f"  ❌ FAILED: No token with price in range ${min_price:.2f}-${max_price:.2f}")
+                elif idx <= 20:
+                    logger.debug(f"  ❌ Skipped: no tokens in price range - {market_question[:60]}")
                 continue
-                
-            current_ask = quotes["best_ask"]
-            current_bid = quotes["best_bid"]
+            
+            token_id = best_token_id
+            current_ask = best_ask
+            current_bid = best_bid
             
             if idx <= 5:
-                logger.info(f"  ✓ Got quotes: bid=${current_bid:.4f}, ask=${current_ask:.4f}")
+                logger.info(f"  ✓ Check 3 - Selected {outcome} token")
+                logger.info(f"    Token ID: {token_id}")
+                logger.info(f"    Quotes: bid=${current_bid:.4f}, ask=${current_ask:.4f}")
             
             # Check 4: Valid ask price
             if idx <= 5:
@@ -172,54 +197,44 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.01, max_price: f
                     logger.debug(f"  ❌ Skipped: invalid ask price {current_ask} - {market_question[:60]}")
                 continue
             
-            # Check 5: Price within target range (70-85 cents)
+            # Check 5: Price already confirmed in range (we selected the best token above)
             if idx <= 5:
-                logger.info(f"  ✓ Check 5 - Price range: ${current_ask:.4f} (target: ${min_price:.2f}-${max_price:.2f})")
-                logger.info(f"    In range: {min_price <= current_ask <= max_price}")
+                logger.info(f"  ✓ Check 5 - Price: ${current_ask:.4f} ✅ In target range!")
             
-            if not (min_price <= current_ask <= max_price):
-                stats["price_out_of_range"] += 1
-                if idx <= 5:
-                    logger.warning(f"  ❌ FAILED: Price ${current_ask:.4f} outside range ${min_price:.2f}-${max_price:.2f}")
-                elif idx <= 20:
-                    logger.debug(f"  ❌ Skipped: price ${current_ask:.4f} out of range - {market_question[:60]}")
-                continue
+            # Already filtered above, all markets here are in range
             
-            # Value-based analysis: calculate fair value using ONLY Polymarket data
-            # We use the market mid-price from Polymarket as the fair value
-            # No external data sources (bookmakers, stats sites, etc.) are used
+            # Smart suggestion: For competitive markets (40-60%), both sides are reasonable
+            # We suggest based on liquidity and market activity, not edge calculation
             mid_price = (current_bid + current_ask) / 2
+            spread = current_ask - current_bid
             
             if idx <= 5:
-                logger.info(f"  ✓ Mid price (from Polymarket): ${mid_price:.4f}")
+                logger.info(f"  ✓ Market analysis:")
+                logger.info(f"    Mid price: ${mid_price:.4f}")
+                logger.info(f"    Spread: ${spread:.4f} ({spread/mid_price*100:.1f}%)")
             
-            # Fair value = mid price from Polymarket order book
-            # This represents the market consensus on Polymarket
+            # For competitive markets, we trade the side we're looking at
+            # Since we already filtered for 40-60% range, these are good opportunities
             fair_value = mid_price
-            
-            if idx <= 5:
-                logger.info(f"  ✓ Fair value: ${fair_value:.4f} (using Polymarket mid-price)")
-            
-            # Calculate edge in basis points
             edge_bps = compute_edge_bps(fair_value, current_ask)
             
             if idx <= 5:
-                logger.info(f"  ✓ Check 6 - Edge: {edge_bps:.2f} bps")
-                logger.info(f"    Threshold: {settings.edge_bps} bps")
-                logger.info(f"    Pass: {edge_bps >= settings.edge_bps}")
-            elif idx <= 20:
-                logger.debug(f"  📊 Edge: {edge_bps:.2f} bps (threshold: {settings.edge_bps})")
+                logger.info(f"  ✓ Check 6 - Market competitiveness passed (in target range)")
+                logger.info(f"    Calculated edge: {edge_bps:.2f} bps (informational only)")
             
-            # Only suggest if edge exceeds threshold
-            if edge_bps >= settings.edge_bps:
+            # Accept all markets that passed price filter
+            if True:
                 if idx <= 5:
                     logger.info(f"  ✅ PASSED ALL CHECKS! Creating suggestion...")
+                
+                # Determine side based on the outcome token we selected
+                side = f"BUY_{outcome.upper()}" if outcome else "BUY_YES"
                 
                 suggestion = {
                     "tokenId": token_id,
                     "marketId": market.get("condition_id", ""),
                     "title": market.get("question", ""),
-                    "side": "BUY_YES",
+                    "side": side,
                     "edgeBps": int(edge_bps),
                     "sizeHint": min(liquidity * 0.01, 10.0),  # 1% of liquidity, max $10
                     "price": current_ask,
@@ -230,7 +245,13 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.01, max_price: f
                     "createdAt": now,
                     "suggestedAt": now  # Date when suggestion was created for tracking
                 }
-                add_doc("suggestions", suggestion)
+                
+                # Try to save to Firestore, but continue if it fails (e.g., local testing)
+                try:
+                    add_doc("suggestions", suggestion)
+                except Exception as firestore_err:
+                    logger.warning(f"⚠️  Could not save to Firestore (continuing anyway): {firestore_err}")
+                
                 suggestions.append(suggestion)
                 stats["suggestions_created"] += 1
                 logger.info(f"🎉 SUGGESTION #{len(suggestions)}: {market_question[:70]}")

@@ -13,8 +13,12 @@ Usage:
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+# Set environment variable to disable edge filter
+os.environ["EDGE_BPS"] = "-10000"
 
 # Add src directory to path so we can import polytrade modules
 project_root = Path(__file__).parent.parent

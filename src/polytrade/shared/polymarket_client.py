@@ -370,24 +370,25 @@ class PolymarketClient:
             return {"available_usd": 0.0, "locked_usd": 0.0, "positions_usd": 0.0, "total_usd": 0.0}
 
     def list_markets(self) -> list[dict[str, Any]]:
-        """Fetch active SPORTS markets ONLY from Polymarket Gamma API.
+        """Fetch markets from Polymarket Gamma API.
         
-        Returns only sports-tagged markets that are active and not closed.
+        Returns active markets that are not closed.
         Does NOT fetch from any external sources - Polymarket only.
         """
         try:
             import httpx
             
             # Gamma API endpoint for markets - Polymarket only
+            # According to docs: https://docs.polymarket.com/developers/gamma-markets-api/fetch-markets-guide
             url = "https://gamma-api.polymarket.com/markets"
             params = {
-                "active": "true",
-                "closed": "false", 
-                "tag": "sports",  # ONLY sports markets - no politics, crypto, etc.
-                "limit": 100
+                "closed": "false",  # Only active markets
+                "limit": 100,       # Get 100 markets
+                "order": "id",      # Order by ID
+                "ascending": "false" # Newest first
             }
             
-            logger.info(f"Fetching SPORTS markets from Polymarket Gamma API: {url}")
+            logger.info(f"Fetching markets from Polymarket Gamma API: {url}")
             logger.debug(f"Request params: {params}")
             logger.info("📊 Using Polymarket data only - no external sources")
             
@@ -395,7 +396,7 @@ class PolymarketClient:
             response.raise_for_status()
             markets = response.json()
             
-            logger.info(f"✅ Fetched {len(markets)} sports markets from Gamma API ")
+            logger.info(f"✅ Fetched {len(markets)} markets from Gamma API")
             
             # Log structure of first market to understand the schema
             if markets and isinstance(markets, list) and len(markets) > 0:

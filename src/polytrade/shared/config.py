@@ -26,8 +26,8 @@ class Settings(BaseSettings):
         return int(v) if isinstance(v, str) else v
 
     # Strategy
-    edge_bps: int = Field(default=50, alias="EDGE_BPS")
-    min_liquidity_usd: int = Field(default=1000, alias="MIN_LIQUIDITY_USD")
+    edge_bps: int = Field(default=0, alias="EDGE_BPS")  # Disabled for smart analyzer
+    min_liquidity_usd: int = Field(default=5000, alias="MIN_LIQUIDITY_USD")  # Raised to 5k for better markets
     default_sl_pct: float = Field(default=0.15, alias="DEFAULT_SL_PCT")
     default_tp_pct: float = Field(default=0.25, alias="DEFAULT_TP_PCT")
 
