@@ -99,6 +99,7 @@ def _analyze_single_market(
         
         # Get event end date if available
         end_date = market.get("endDate", None)
+        priority = market.get("_priority", 3)
         
         suggestion = {
             "tokenId": token_id,
@@ -113,6 +114,7 @@ def _analyze_single_market(
             "yesProbability": yes_probability,
             "noProbability": no_probability,
             "endDate": end_date,  # When the event finishes
+            "priority": priority,  # 1=ending in 24h, 2=later, 3=no date
             "expiresAt": now + 3600,
             "status": "OPEN",
             "createdAt": now,
@@ -159,16 +161,58 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
     markets = client.list_markets()
     logger.info(f"✅ Fetched {len(markets)} markets from Polymarket")
     
-    suggestions: list[dict[str, Any]] = []
+    # Filter and sort markets by end date - prioritize those ending soon (next 24 hours)
     now = int(time.time())
+    markets_with_end_date = []
+    markets_without_end_date = []
     
-    logger.info(f"⚡ Processing {len(markets)} markets in parallel with 10 concurrent threads...")
+    from datetime import datetime, timezone, timedelta
+    now_dt = datetime.now(timezone.utc)
+    twenty_four_hours_from_now = now_dt + timedelta(hours=24)
+    
+    for market in markets:
+        end_date_str = market.get("endDate")
+        if end_date_str:
+            try:
+                # Parse ISO format: "2024-06-17T12:00:00Z"
+                end_dt = datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
+                
+                # Check if ending in the next 24 hours
+                if now_dt < end_dt <= twenty_four_hours_from_now:
+                    # Add time_to_end for sorting (in seconds)
+                    time_to_end = (end_dt - now_dt).total_seconds()
+                    market['_time_to_end'] = time_to_end
+                    market['_priority'] = 1  # High priority
+                    markets_with_end_date.append(market)
+                else:
+                    # Still include, but lower priority
+                    market['_priority'] = 2
+                    markets_without_end_date.append(market)
+            except Exception:
+                market['_priority'] = 3
+                markets_without_end_date.append(market)
+        else:
+            market['_priority'] = 3
+            markets_without_end_date.append(market)
+    
+    # Sort markets ending soon by how soon they end (soonest first)
+    markets_with_end_date.sort(key=lambda m: m.get('_time_to_end', float('inf')))
+    
+    # Prioritize markets ending soon, then others
+    prioritized_markets = markets_with_end_date + markets_without_end_date
+    
+    logger.info(f"🕐 Found {len(markets_with_end_date)} markets ending in next 24 hours")
+    logger.info(f"⏰ Prioritizing soonest-ending markets first")
+    
+    suggestions: list[dict[str, Any]] = []
+    
+    logger.info(f"⚡ Processing {len(prioritized_markets)} markets in parallel with 10 concurrent threads...")
     logger.info(f"🎯 Target: {max_suggestions} suggestions")
     
     # Use ThreadPoolExecutor for parallel processing
     # 10 concurrent threads = good balance between speed and API rate limits
     with ThreadPoolExecutor(max_workers=10) as executor:
-        # Submit all markets for processing
+        # Submit all markets for processing (prioritized order)
         future_to_idx = {
             executor.submit(
                 _analyze_single_market,
@@ -178,7 +222,7 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
                 max_price,
                 now
             ): (idx, market)
-            for idx, market in enumerate(markets, 1)
+            for idx, market in enumerate(prioritized_markets, 1)
         }
         
         # Collect results as they complete
@@ -202,7 +246,8 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
                 result = future.result()
                 if result:
                     suggestions.append(result)
-                    logger.info(f"🎉 SUGGESTION #{len(suggestions)}: {result['title'][:70]}")
+                    priority_flag = "🔴 URGENT (24h)" if result.get('priority') == 1 else ""
+                    logger.info(f"🎉 SUGGESTION #{len(suggestions)}: {result['title'][:70]} {priority_flag}")
                     logger.info(f"   Price: ${result['price']:.4f} | Side: {result['side']} | Liquidity: ${result['liquidity']:.2f}")
                     
                     # Stop if we have enough suggestions
@@ -223,7 +268,9 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
     # Final summary
     logger.info("=" * 80)
     logger.info("ANALYSIS SUMMARY:")
-    logger.info(f"  Markets processed: {min(completed, len(markets))}/{len(markets)}")
+    logger.info(f"  Total markets fetched: {len(markets)}")
+    logger.info(f"  Markets ending in 24h: {len(markets_with_end_date)}")
+    logger.info(f"  Markets processed: {min(completed, len(prioritized_markets))}/{len(prioritized_markets)}")
     logger.info(f"  ✅ SUGGESTIONS CREATED: {len(suggestions)}")
     logger.info(f"  Processing method: Parallel (10 threads)")
     logger.info("=" * 80)

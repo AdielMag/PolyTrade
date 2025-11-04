@@ -3,6 +3,9 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from loguru import logger
 
 from ...shared.config import settings
@@ -17,7 +20,13 @@ from ..analyzer.analysis import run_analysis
 configure_logging()
 
 app = FastAPI()
-dp = Dispatcher()
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+
+
+# States for custom range input
+class CustomRangeStates(StatesGroup):
+    waiting_for_range = State()
 
 
 def get_bot() -> Bot:
@@ -117,24 +126,125 @@ async def cmd_balance(message: types.Message) -> None:
 
 @dp.message(Command("suggest"))
 async def cmd_suggest(message: types.Message) -> None:
+    """Ask user for their desired probability range."""
     try:
-        # Notify user we're analyzing markets
-        status_msg = await message.answer("🔄 <b>Analyzing markets...</b>\n\nThis may take a moment...", parse_mode="HTML")
+        # Create inline keyboard with common ranges
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         
-        # Run analyzer on demand to get fresh suggestions
-        suggestions = run_analysis(max_suggestions=5)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🎯 80-90% (Strong Favorites)", callback_data="range:80:90")
+            ],
+            [
+                InlineKeyboardButton(text="⚖️ 60-75% (Moderate)", callback_data="range:60:75")
+            ],
+            [
+                InlineKeyboardButton(text="🎲 40-60% (Balanced)", callback_data="range:40:60")
+            ],
+            [
+                InlineKeyboardButton(text="📊 20-40% (Underdogs)", callback_data="range:20:40")
+            ],
+            [
+                InlineKeyboardButton(text="🔍 Custom Range", callback_data="range:custom")
+            ]
+        ])
         
-        # Delete the status message
-        await status_msg.delete()
+        await message.answer(
+            "🎯 <b>Select Probability Range</b>\n\n"
+            "Choose what type of bets you want to see:\n\n"
+            "• <b>80-90%</b> - Heavy favorites (safer)\n"
+            "• <b>60-75%</b> - Moderate favorites\n"
+            "• <b>40-60%</b> - Balanced/toss-up games\n"
+            "• <b>20-40%</b> - Underdogs (riskier)\n\n"
+            "💡 Markets ending in next 24h are prioritized!",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(
+            f"⚠️ <b>Error</b>\n\n<code>{str(e)}</code>",
+            parse_mode="HTML"
+        )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("range:"))
+async def on_range_select(callback: types.CallbackQuery) -> None:
+    """Handle range selection and run analyzer."""
+    try:
+        if not callback.data:
+            await callback.answer("❌ Invalid selection")
+            return
+        
+        parts = callback.data.split(":")
+        
+        # Handle custom range - ask user for input
+        if len(parts) >= 2 and parts[1] == "custom":
+            from aiogram.fsm.context import FSMContext
+            
+            # Get FSM context
+            state = FSMContext(storage=storage, key=callback.message.chat.id)
+            
+            await callback.message.edit_text(
+                "🔢 <b>Custom Probability Range</b>\n\n"
+                "Enter your desired range in the format:\n"
+                "👉 <code>min-max</code>\n\n"
+                "<b>Examples:</b>\n"
+                "• <code>70-85</code> - Markets between 70-85%\n"
+                "• <code>30-50</code> - Markets between 30-50%\n"
+                "• <code>15-25</code> - Markets between 15-25%\n\n"
+                "💡 Valid range: 1-99%\n"
+                "⚠️ Min must be less than max\n\n"
+                "📝 Type your range now:",
+                parse_mode="HTML"
+            )
+            
+            # Set state to wait for custom range input
+            await state.set_state(CustomRangeStates.waiting_for_range)
+            await callback.answer()
+            return
+        
+        if len(parts) < 3:
+            await callback.answer("❌ Invalid range format")
+            return
+        
+        min_pct = int(parts[1])
+        max_pct = int(parts[2])
+        min_price = min_pct / 100.0
+        max_price = max_pct / 100.0
+        
+        # Update message to show analyzing
+        await callback.message.edit_text(
+            f"🔍 <b>Analyzing {min_pct}-{max_pct}% markets...</b>\n\n"
+            f"⏳ Fetching data from Polymarket\n"
+            f"📊 Filtering {len([1])} markets\n"
+            f"⚡ Using multithreading\n\n"
+            f"<i>Please wait 10-20 seconds...</i>",
+            parse_mode="HTML"
+        )
+        
+        # Run analyzer with user's selected range
+        logger.info(f"User requested suggestions with range {min_pct}-{max_pct}%")
+        suggestions = run_analysis(max_suggestions=5, min_price=min_price, max_price=max_price)
+        
+        logger.info(f"✅ Analyzer completed - generated {len(suggestions)} suggestions")
+        
+        # Delete the analyzing message
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
         
         if not suggestions:
+            logger.info("❌ No suggestions generated")
             no_suggestions_msg = (
-                f"📭 <b>No suggestions available right now</b>\n\n"
-                f"No markets matching our criteria were found.\n"
-                f"Try again later for new opportunities! 🎯\n\n"
-                f"💡 Use /balance to check your portfolio"
+                f"📭 <b>No suggestions found</b>\n\n"
+                f"No markets in the <b>{min_pct}-{max_pct}%</b> range were found.\n\n"
+                f"💡 Try a different range:\n"
+                f"• Use /suggest to try again\n"
+                f"• Try a wider range (e.g., 40-60%)\n\n"
+                f"📊 Use /balance to check your portfolio"
             )
-            await message.answer(no_suggestions_msg, parse_mode="HTML")
+            await callback.message.answer(no_suggestions_msg, parse_mode="HTML")
             return
         
         # Get the suggestion IDs from firestore to pass to keyboards
@@ -158,6 +268,141 @@ async def cmd_suggest(message: types.Message) -> None:
                         s.get("endDate", None)
                     )
                     kb = amount_presets_kb(suggestion_id=doc.id, token_id=s.get("tokenId", ""), side=s.get("side", ""))
+                    await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+                    sent_count += 1
+                    logger.info(f"✅ Sent suggestion {i}/{len(suggestions)}")
+            except Exception as send_err:
+                logger.error(f"❌ Error sending suggestion {i}: {send_err}")
+        
+        logger.info(f"✅ Finished sending {sent_count}/{len(suggestions)} suggestions to user")
+        await callback.answer()  # Acknowledge the callback
+        return  # Explicitly return to end the function
+    except Exception as e:
+        logger.error(f"Error in range selection: {e}")
+        await callback.answer(f"⚠️ Error: {str(e)}", show_alert=True)
+
+
+@dp.message(CustomRangeStates.waiting_for_range)
+async def process_custom_range(message: types.Message, state: FSMContext) -> None:
+    """Process user's custom range input."""
+    try:
+        user_input = message.text.strip()
+        
+        # Parse input format: "min-max"
+        if '-' not in user_input:
+            await message.answer(
+                "❌ <b>Invalid format</b>\n\n"
+                "Please use format: <code>min-max</code>\n"
+                "Example: <code>70-85</code>\n\n"
+                "Try again:",
+                parse_mode="HTML"
+            )
+            return
+        
+        parts = user_input.split('-')
+        if len(parts) != 2:
+            await message.answer(
+                "❌ <b>Invalid format</b>\n\n"
+                "Please use format: <code>min-max</code>\n"
+                "Example: <code>70-85</code>\n\n"
+                "Try again:",
+                parse_mode="HTML"
+            )
+            return
+        
+        try:
+            min_pct = int(parts[0].strip())
+            max_pct = int(parts[1].strip())
+        except ValueError:
+            await message.answer(
+                "❌ <b>Invalid numbers</b>\n\n"
+                "Please enter valid percentages.\n"
+                "Example: <code>70-85</code>\n\n"
+                "Try again:",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Validate range
+        if min_pct < 1 or max_pct > 99:
+            await message.answer(
+                "❌ <b>Out of range</b>\n\n"
+                "Percentages must be between 1 and 99.\n"
+                "Example: <code>70-85</code>\n\n"
+                "Try again:",
+                parse_mode="HTML"
+            )
+            return
+        
+        if min_pct >= max_pct:
+            await message.answer(
+                "❌ <b>Invalid range</b>\n\n"
+                "Min must be less than max.\n"
+                "Example: <code>70-85</code> (not <code>85-70</code>)\n\n"
+                "Try again:",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Clear state
+        await state.clear()
+        
+        # Convert to decimal
+        min_price = min_pct / 100.0
+        max_price = max_pct / 100.0
+        
+        # Show analyzing message
+        analyzing_msg = await message.answer(
+            f"🔍 <b>Analyzing {min_pct}-{max_pct}% markets...</b>\n\n"
+            f"⏳ Fetching data from Polymarket\n"
+            f"📊 Custom range selected\n"
+            f"⚡ Using multithreading\n\n"
+            f"<i>Please wait 10-20 seconds...</i>",
+            parse_mode="HTML"
+        )
+        
+        # Run analyzer with custom range
+        logger.info(f"User requested custom range: {min_pct}-{max_pct}%")
+        suggestions = run_analysis(max_suggestions=5, min_price=min_price, max_price=max_price)
+        logger.info(f"✅ Analyzer completed - generated {len(suggestions)} suggestions")
+        
+        # Delete analyzing message
+        try:
+            await analyzing_msg.delete()
+        except Exception:
+            pass
+        
+        if not suggestions:
+            logger.info("❌ No suggestions generated")
+            await message.answer(
+                f"📭 <b>No suggestions found</b>\n\n"
+                f"No markets in the <b>{min_pct}-{max_pct}%</b> range were found.\n\n"
+                f"💡 Try a different range:\n"
+                f"• Use /suggest to try again\n"
+                f"• Try a wider range (e.g., 40-60%)\n\n"
+                f"📊 Use /balance to check your portfolio",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Send suggestions
+        logger.info(f"📤 Sending {len(suggestions)} suggestions to user...")
+        db = get_client()
+        sent_count = 0
+        
+        for i, s in enumerate(suggestions, 1):
+            try:
+                snap = db.collection("suggestions").where("tokenId", "==", s.get("tokenId", "")).where("status", "==", "OPEN").limit(1).get()
+                if snap:
+                    doc = snap[0]
+                    text = suggestion_message(
+                        s.get("title", ""), 
+                        s.get("side", ""), 
+                        s.get("yesProbability", 0.5), 
+                        s.get("noProbability", 0.5),
+                        s.get("endDate", None)
+                    )
+                    kb = amount_presets_kb(suggestion_id=doc.id, token_id=s.get("tokenId", ""), side=s.get("side", ""))
                     await message.answer(text, reply_markup=kb, parse_mode="HTML")
                     sent_count += 1
                     logger.info(f"✅ Sent suggestion {i}/{len(suggestions)}")
@@ -165,33 +410,16 @@ async def cmd_suggest(message: types.Message) -> None:
                 logger.error(f"❌ Error sending suggestion {i}: {send_err}")
         
         logger.info(f"✅ Finished sending {sent_count}/{len(suggestions)} suggestions to user")
-        return  # Explicitly return to end the function
+        
     except Exception as e:
-        # User-friendly error handling
-        error_msg = str(e)
-        if "index" in error_msg.lower():
-            await message.answer(
-                "⚠️ <b>Database Index Required</b>\n\n"
-                "The database needs to be configured. Please:\n"
-                "• Create the Firestore index using the link in error logs\n"
-                "• Or contact your administrator\n\n"
-                "⏱ This is a one-time setup (1-2 minutes)",
-                parse_mode="HTML"
-            )
-        elif "404" in error_msg or "does not exist" in error_msg:
-            await message.answer(
-                "⚠️ <b>Database Not Found</b>\n\n"
-                "Please ensure the Firestore database 'polytrade' is created.\n"
-                "📧 Contact your administrator for setup.",
-                parse_mode="HTML"
-            )
-        else:
-            await message.answer(
-                f"⚠️ <b>Error Fetching Suggestions</b>\n\n"
-                f"<code>{error_msg}</code>\n\n"
-                f"Please try again later. 🔄",
-                parse_mode="HTML"
-            )
+        logger.error(f"Error processing custom range: {e}")
+        await message.answer(
+            f"⚠️ <b>Error</b>\n\n"
+            f"<code>{str(e)}</code>\n\n"
+            f"Please try /suggest again.",
+            parse_mode="HTML"
+        )
+        await state.clear()
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("amt:"))
