@@ -554,8 +554,18 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
 
 
 @dp.message()
-async def handle_unknown(message: types.Message) -> None:
-    """Handle unknown commands and messages."""
+async def handle_unknown(message: types.Message, state: FSMContext) -> None:
+    """Handle unknown commands and messages.
+    
+    Note: This is a catch-all handler, so it should ignore messages
+    when the user is in an FSM state (e.g., entering custom range).
+    """
+    # Check if user is in any state - if so, don't handle (let state handler process it)
+    current_state = await state.get_state()
+    if current_state is not None:
+        # User is in a state, this message should be handled by the state handler
+        return
+    
     await message.answer(
         f"❓ <b>Command not found</b>\n\n"
         f"I don't understand that command.\n\n"
