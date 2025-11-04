@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from loguru import logger
 
 from ...shared.config import settings
 from ...shared.firestore import get_client
@@ -139,15 +140,31 @@ async def cmd_suggest(message: types.Message) -> None:
         # Get the suggestion IDs from firestore to pass to keyboards
         # The suggestions returned by run_analysis have been saved to firestore
         # We need to query them back to get their document IDs
+        logger.info(f"📤 Sending {len(suggestions)} suggestions to user...")
         db = get_client()
-        for s in suggestions:
-            # Query for this suggestion by tokenId to get its document ID
-            snap = db.collection("suggestions").where("tokenId", "==", s.get("tokenId", "")).where("status", "==", "OPEN").limit(1).get()
-            if snap:
-                doc = snap[0]
-                text = suggestion_message(s.get("title", ""), s.get("side", ""), int(s.get("edgeBps", 0)))
-                kb = amount_presets_kb(suggestion_id=doc.id, token_id=s.get("tokenId", ""), side=s.get("side", ""))
-                await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        sent_count = 0
+        
+        for i, s in enumerate(suggestions, 1):
+            try:
+                # Query for this suggestion by tokenId to get its document ID
+                snap = db.collection("suggestions").where("tokenId", "==", s.get("tokenId", "")).where("status", "==", "OPEN").limit(1).get()
+                if snap:
+                    doc = snap[0]
+                    text = suggestion_message(
+                        s.get("title", ""), 
+                        s.get("side", ""), 
+                        s.get("yesProbability", 0.5), 
+                        s.get("noProbability", 0.5)
+                    )
+                    kb = amount_presets_kb(suggestion_id=doc.id, token_id=s.get("tokenId", ""), side=s.get("side", ""))
+                    await message.answer(text, reply_markup=kb, parse_mode="HTML")
+                    sent_count += 1
+                    logger.info(f"✅ Sent suggestion {i}/{len(suggestions)}")
+            except Exception as send_err:
+                logger.error(f"❌ Error sending suggestion {i}: {send_err}")
+        
+        logger.info(f"✅ Finished sending {sent_count}/{len(suggestions)} suggestions to user")
+        return  # Explicitly return to end the function
     except Exception as e:
         # User-friendly error handling
         error_msg = str(e)
