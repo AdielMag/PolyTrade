@@ -383,7 +383,7 @@ class PolymarketClient:
             url = "https://gamma-api.polymarket.com/markets"
             params = {
                 "closed": "false",  # Only active markets
-                "limit": 100,       # Get 100 markets
+                "limit": 500,       # Fetch more markets to find ones with liquidity
                 "order": "id",      # Order by ID
                 "ascending": "false" # Newest first
             }

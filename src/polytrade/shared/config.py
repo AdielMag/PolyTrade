@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # Strategy
     edge_bps: int = Field(default=0, alias="EDGE_BPS")  # Disabled for smart analyzer
-    min_liquidity_usd: int = Field(default=5000, alias="MIN_LIQUIDITY_USD")  # Raised to 5k for better markets
+    min_liquidity_usd: int = Field(default=500, alias="MIN_LIQUIDITY_USD")  # Lowered to find more markets
     default_sl_pct: float = Field(default=0.15, alias="DEFAULT_SL_PCT")
     default_tp_pct: float = Field(default=0.25, alias="DEFAULT_TP_PCT")
 

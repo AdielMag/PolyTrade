@@ -16,26 +16,24 @@ def compute_edge_bps(fair: float, ask: float) -> float:
     return (fair - ask) * 10000.0 / ask
 
 
-def run_analysis(max_suggestions: int = 5, min_price: float = 0.20, max_price: float = 0.80) -> list[dict[str, Any]]:
+def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: float = 0.90) -> list[dict[str, Any]]:
     """Analyze markets from Polymarket and create trade suggestions.
     
     Smart analyzer that:
-    - Looks for tradeable markets (prices between 20-80% = has some uncertainty)
+    - Looks for high probability markets (prices between 80-90% = strong favorites)
     - Checks BOTH YES and NO sides of each market
-    - Prioritizes markets with good liquidity
     - Uses Polymarket data only (no external sources)
     
     Args:
         max_suggestions: Maximum number of suggestions to return
-        min_price: Minimum market price to consider (default 0.20 = 20%)
-        max_price: Maximum market price to consider (default 0.80 = 80%)
+        min_price: Minimum market price to consider (default 0.80 = 80%)
+        max_price: Maximum market price to consider (default 0.90 = 90%)
     """
     logger.info("=" * 80)
     logger.info("🧠 Starting SMART ANALYZER (Polymarket only)")
     logger.info(f"Max suggestions: {max_suggestions}")
-    logger.info(f"Price range: {int(min_price*100)}%-{int(max_price*100)}% (tradeable markets)")
-    logger.info(f"Min liquidity: ${settings.min_liquidity_usd}")
-    logger.info(f"Strategy: Checking BOTH YES and NO sides for tradeable prices")
+    logger.info(f"Price range: {int(min_price*100)}%-{int(max_price*100)}% (high probability markets)")
+    logger.info(f"Strategy: Looking for strong favorites - checking BOTH YES and NO sides")
     logger.info("=" * 80)
     
     # Create client without authentication for read-only market fetching
@@ -127,21 +125,13 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.20, max_price: f
             if idx <= 5:
                 logger.info(f"  ✓ Token ID: {token_id}")
             
-            # Check 2: Liquidity (use liquidityClob field from Polymarket)
+            # Check 2: Liquidity (recorded for stats but NOT filtered)
             liquidity = float(market.get("liquidityClob", 0))
             
             if idx <= 5:
-                logger.info(f"  ✓ Check 2 - Liquidity (liquidityClob): ${liquidity:.2f}")
-                logger.info(f"    Threshold: ${settings.min_liquidity_usd}")
-                logger.info(f"    Pass: {liquidity >= settings.min_liquidity_usd}")
+                logger.info(f"  ✓ Check 2 - Liquidity: ${liquidity:.2f} (informational only, no filter)")
             
-            if liquidity < settings.min_liquidity_usd:
-                stats["no_liquidity"] += 1
-                if idx <= 5:
-                    logger.warning(f"  ❌ FAILED: Liquidity ${liquidity:.2f} < ${settings.min_liquidity_usd}")
-                elif idx <= 20:
-                    logger.debug(f"  ❌ Skipped: low liquidity ${liquidity:.2f} < ${settings.min_liquidity_usd} - {market_question[:60]}")
-                continue
+            # Note: Liquidity check disabled per user request
             
             # Check 3: Check all tokens to find one with competitive pricing
             best_token_id = None
