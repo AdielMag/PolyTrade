@@ -370,13 +370,34 @@ class PolymarketClient:
             return {"available_usd": 0.0, "locked_usd": 0.0, "positions_usd": 0.0, "total_usd": 0.0}
 
     def list_markets(self) -> list[dict[str, Any]]:
-        """Fetch markets from Polymarket Gamma API.
+        """Fetch SPORTS markets ONLY from Polymarket Gamma API.
         
-        Returns active markets that are not closed.
+        Returns active sports markets that are not closed.
         Does NOT fetch from any external sources - Polymarket only.
         """
         try:
             import httpx
+            
+            # First, get the sports tag ID from the /sports endpoint
+            logger.info("Fetching sports tag information from Polymarket...")
+            sports_url = "https://gamma-api.polymarket.com/sports"
+            
+            try:
+                sports_response = httpx.get(sports_url, timeout=10.0)
+                sports_response.raise_for_status()
+                sports_data = sports_response.json()
+                
+                # Extract tag IDs from sports data (all sports have tag IDs)
+                sports_tag_ids = set()
+                if isinstance(sports_data, list):
+                    for sport in sports_data:
+                        if "id" in sport:
+                            sports_tag_ids.add(str(sport["id"]))
+                
+                logger.info(f"✅ Found {len(sports_tag_ids)} sports tag IDs")
+            except Exception as e:
+                logger.warning(f"Could not fetch sports tags, will filter by keywords: {e}")
+                sports_tag_ids = set()
             
             # Gamma API endpoint for markets - Polymarket only
             # According to docs: https://docs.polymarket.com/developers/gamma-markets-api/fetch-markets-guide
@@ -390,13 +411,40 @@ class PolymarketClient:
             
             logger.info(f"Fetching markets from Polymarket Gamma API: {url}")
             logger.debug(f"Request params: {params}")
-            logger.info("📊 Using Polymarket data only - no external sources")
+            logger.info("📊 Fetching all markets, will filter for sports")
             
             response = httpx.get(url, params=params, timeout=30.0)
             response.raise_for_status()
-            markets = response.json()
+            all_markets = response.json()
             
-            logger.info(f"✅ Fetched {len(markets)} markets from Gamma API")
+            logger.info(f"✅ Fetched {len(all_markets)} total markets from Gamma API")
+            
+            # Filter for sports markets only
+            sports_keywords = [
+                "vs", "vs.", "football", "basketball", "baseball", "soccer", "nfl", "nba", 
+                "mlb", "nhl", "tennis", "golf", "boxing", "mma", "ufc", "cricket", 
+                "rugby", "hockey", "ncaa", "college", "spread", "o/u", "over/under",
+                "moneyline", "1h", "1st half", "playoff", "championship", "bowl",
+                "game", "match", "series", "tournament"
+            ]
+            
+            markets = []
+            for market in all_markets:
+                # Check if market has sports tag
+                market_tags = market.get("tags", [])
+                if isinstance(market_tags, list):
+                    # Check if any tag is a sports tag
+                    has_sports_tag = any(str(tag.get("id", "")) in sports_tag_ids for tag in market_tags if isinstance(tag, dict))
+                    if has_sports_tag:
+                        markets.append(market)
+                        continue
+                
+                # Fallback: check question for sports keywords
+                question = market.get("question", "").lower()
+                if any(keyword in question for keyword in sports_keywords):
+                    markets.append(market)
+            
+            logger.info(f"✅ Filtered to {len(markets)} SPORTS markets")
             
             # Log structure of first market to understand the schema
             if markets and isinstance(markets, list) and len(markets) > 0:
@@ -438,10 +486,11 @@ class PolymarketClient:
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return []
 
-    def get_quotes(self, token_id: str) -> dict[str, Any]:
+    def get_quotes(self, token_id: str, retry_count: int = 0) -> dict[str, Any]:
         """Get current best bid/ask prices from CLOB order book.
         
         Fetches publicly available order book data - no authentication required.
+        Includes retry logic for rate limiting (429 errors).
         """
         try:
             if self.client:
@@ -469,7 +518,19 @@ class PolymarketClient:
             }
             
         except Exception as e:
-            logger.error(f"Failed to get quotes for token {token_id}: {e}")
+            error_str = str(e)
+            
+            # Retry on rate limit (429) up to 2 times with exponential backoff
+            if "429" in error_str and retry_count < 2:
+                wait_time = (retry_count + 1) * 0.5  # 0.5s, 1s
+                time.sleep(wait_time)
+                return self.get_quotes(token_id, retry_count + 1)
+            
+            # Don't log rate limit errors (too noisy), only real errors
+            if "429" not in error_str:
+                logger.error(f"Failed to get quotes for token {token_id}: {e}")
+            
+            # Return zero values so market gets filtered out
             return {"best_bid": 0.0, "best_ask": 0.0, "ts": int(time.time())}
 
     def place_order(self, token_id: str, side: str, price: float, size: float) -> dict[str, Any]:

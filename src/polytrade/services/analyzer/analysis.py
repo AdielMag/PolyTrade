@@ -65,7 +65,11 @@ def _analyze_single_market(
                     best_bid = bid_temp
                     outcome = "YES" if i == 0 else "NO"
                     break
-            except Exception:
+            except Exception as e:
+                # Rate limit or other error - continue to next token
+                if "429" in str(e):
+                    import time
+                    time.sleep(0.1)  # Brief pause on rate limit
                 continue
         
         # If no token in range, skip this market
@@ -154,12 +158,12 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
     suggestions: list[dict[str, Any]] = []
     now = int(time.time())
     
-    logger.info(f"⚡ Processing {len(markets)} markets in parallel with 20 concurrent threads...")
+    logger.info(f"⚡ Processing {len(markets)} markets in parallel with 10 concurrent threads...")
     logger.info(f"🎯 Target: {max_suggestions} suggestions")
     
     # Use ThreadPoolExecutor for parallel processing
-    # 20 concurrent threads = ~5-10x faster than sequential
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    # 10 concurrent threads = good balance between speed and API rate limits
+    with ThreadPoolExecutor(max_workers=10) as executor:
         # Submit all markets for processing
         future_to_idx = {
             executor.submit(
@@ -217,7 +221,7 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
     logger.info("ANALYSIS SUMMARY:")
     logger.info(f"  Markets processed: {min(completed, len(markets))}/{len(markets)}")
     logger.info(f"  ✅ SUGGESTIONS CREATED: {len(suggestions)}")
-    logger.info(f"  Processing method: Parallel (20 threads)")
+    logger.info(f"  Processing method: Parallel (10 threads)")
     logger.info("=" * 80)
     
     return suggestions
