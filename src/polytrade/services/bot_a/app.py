@@ -154,7 +154,8 @@ async def cmd_suggest(message: types.Message) -> None:
                         s.get("title", ""), 
                         s.get("side", ""), 
                         s.get("yesProbability", 0.5), 
-                        s.get("noProbability", 0.5)
+                        s.get("noProbability", 0.5),
+                        s.get("endDate", None)
                     )
                     kb = amount_presets_kb(suggestion_id=doc.id, token_id=s.get("tokenId", ""), side=s.get("side", ""))
                     await message.answer(text, reply_markup=kb, parse_mode="HTML")

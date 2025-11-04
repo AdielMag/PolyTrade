@@ -97,6 +97,9 @@ def _analyze_single_market(
         yes_probability = current_ask if outcome == "YES" else (1.0 - current_ask)
         no_probability = 1.0 - yes_probability
         
+        # Get event end date if available
+        end_date = market.get("endDate", None)
+        
         suggestion = {
             "tokenId": token_id,
             "marketId": condition_id,
@@ -109,6 +112,7 @@ def _analyze_single_market(
             "liquidity": liquidity,
             "yesProbability": yes_probability,
             "noProbability": no_probability,
+            "endDate": end_date,  # When the event finishes
             "expiresAt": now + 3600,
             "status": "OPEN",
             "createdAt": now,
