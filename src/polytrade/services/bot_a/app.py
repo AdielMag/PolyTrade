@@ -179,23 +179,45 @@ async def cmd_suggest(message: types.Message) -> None:
 @dp.callback_query(lambda c: c.data and c.data.startswith("amt:"))
 async def on_amount_select(callback: types.CallbackQuery) -> None:
     try:
-        if not callback.data or len(callback.data.split(":")) < 6:
+        if not callback.data:
             await callback.answer("❌ Invalid selection data")
             return
             
         parts = callback.data.split(":")
-        suggestion_id, token_id, side, size_type, size_str = parts[1], parts[2], parts[3], parts[4], parts[5]
+        if len(parts) < 3:
+            await callback.answer("❌ Invalid selection data")
+            return
+            
+        suggestion_id = parts[1]
+        size_str = parts[2]
+        
+        # Handle custom amount (not implemented yet)
+        if size_str == "custom":
+            await callback.answer("⚠️ Custom amount not yet implemented", show_alert=True)
+            return
+        
         size = float(size_str)
         
-        # TODO: fetch suggestion doc to get current price
-        price = 0.5  # placeholder
+        # Fetch suggestion from Firestore to get all details
+        db = get_client()
+        suggestion_doc = db.collection("suggestions").document(suggestion_id).get()
+        
+        if not suggestion_doc.exists:
+            await callback.answer("❌ Suggestion not found or expired", show_alert=True)
+            return
+        
+        suggestion = suggestion_doc.to_dict()
+        token_id = suggestion.get("tokenId", "")
+        side = suggestion.get("side", "BUY_YES")
+        price = suggestion.get("price", 0.5)
         
         side_emoji = "📈" if side.upper().startswith("BUY") else "📉"
         confirm_msg = (
             f"{side_emoji} <b>Confirm Trade</b>\n\n"
+            f"Market: {suggestion.get('title', 'N/A')[:60]}\n"
             f"Side: {side.upper()}\n"
             f"Size: {size} contracts\n"
-            f"Price: {price:.4f}\n"
+            f"Price: ${price:.4f}\n"
             f"Total: ${size * price:.2f}\n\n"
             f"Ready to place this order?"
         )
@@ -218,13 +240,30 @@ async def on_cancel(callback: types.CallbackQuery) -> None:
 @dp.callback_query(lambda c: c.data and c.data.startswith("confirm:"))
 async def on_confirm(callback: types.CallbackQuery) -> None:
     try:
-        if not callback.data or len(callback.data.split(":")) < 6:
+        if not callback.data:
             await callback.answer("❌ Invalid confirmation data", show_alert=True)
             return
             
         parts = callback.data.split(":")
-        suggestion_id, token_id, side, price_str, size_str = parts[1], parts[2], parts[3], parts[4], parts[5]
-        price, size = float(price_str), float(size_str)
+        if len(parts) < 3:
+            await callback.answer("❌ Invalid confirmation data", show_alert=True)
+            return
+            
+        suggestion_id = parts[1]
+        size = float(parts[2])
+        
+        # Fetch suggestion from Firestore to get all details
+        db = get_client()
+        suggestion_doc = db.collection("suggestions").document(suggestion_id).get()
+        
+        if not suggestion_doc.exists:
+            await callback.answer("❌ Suggestion not found or expired", show_alert=True)
+            return
+        
+        suggestion = suggestion_doc.to_dict()
+        token_id = suggestion.get("tokenId", "")
+        side = suggestion.get("side", "BUY_YES")
+        price = suggestion.get("price", 0.5)
         
         # Loading indicator
         await callback.answer("⏳ Placing order...")
@@ -237,9 +276,10 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
             side_emoji = "📈" if side.upper().startswith("BUY") else "📉"
             success_msg = (
                 f"✅ <b>Trade Placed Successfully!</b>\n\n"
+                f"Market: {suggestion.get('title', 'N/A')[:60]}\n"
                 f"{side_emoji} Side: {side.upper()}\n"
                 f"📊 Size: {size} contracts\n"
-                f"💵 Price: {price:.4f}\n"
+                f"💵 Price: ${price:.4f}\n"
                 f"💰 Total: ${size * price:.2f}\n\n"
                 f"🆔 Trade ID: <code>{result.get('trade_id', 'N/A')}</code>\n\n"
                 f"✨ Your order is now live on Polymarket!"
