@@ -25,14 +25,43 @@ def suggestion_message(title: str, side: str, yes_prob: float, no_prob: float, e
         suggested_side = "NO"
         suggested_prob = no_prob
     
-    # Format end date if available
+    # Format event time if available
     end_date_str = ""
     if end_date:
         try:
             from datetime import datetime
-            # Parse ISO format: "2024-06-17T12:00:00Z"
-            dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-            end_date_str = f"\n⏰ Event ends: <b>{dt.strftime('%b %d, %Y %H:%M UTC')}</b>"
+            # Parse ISO format: "2024-06-17T12:00:00Z" or "2024-06-17 12:00:00+00:00"
+            if isinstance(end_date, str):
+                # Handle both formats from API
+                if ' ' in end_date and '+' in end_date:
+                    # Format: "2025-11-09 03:00:00+00"
+                    dt = datetime.fromisoformat(end_date.replace('+00', '+00:00'))
+                else:
+                    # Format: "2025-11-09T03:00:00Z"
+                    dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                
+                # Calculate time until event
+                from datetime import timezone
+                now = datetime.now(timezone.utc)
+                time_until = dt - now
+                
+                if time_until.total_seconds() > 0:
+                    hours = int(time_until.total_seconds() // 3600)
+                    minutes = int((time_until.total_seconds() % 3600) // 60)
+                    if hours == 0:
+                        end_date_str = f"\n⏰ 🔴 <b>STARTING IN {minutes} MINUTES!</b>"
+                    elif hours < 6:
+                        end_date_str = f"\n⏰ 🟡 <b>Starts in {hours}h {minutes}m</b> ({dt.strftime('%H:%M UTC')})"
+                    else:
+                        end_date_str = f"\n⏰ Game starts: <b>{dt.strftime('%b %d, %H:%M UTC')}</b> (in {hours}h)"
+                else:
+                    # Game already started - it's LIVE!
+                    hours_ago = abs(int(time_until.total_seconds() // 3600))
+                    minutes_ago = abs(int((time_until.total_seconds() % 3600) // 60))
+                    if hours_ago == 0:
+                        end_date_str = f"\n⏰ 🔴 <b>LIVE NOW!</b> (started {minutes_ago}m ago)"
+                    else:
+                        end_date_str = f"\n⏰ 🔴 <b>LIVE NOW!</b> (started {hours_ago}h {minutes_ago}m ago)"
         except Exception:
             pass  # Skip if date parsing fails
     

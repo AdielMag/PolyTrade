@@ -97,8 +97,8 @@ def _analyze_single_market(
         yes_probability = current_ask if outcome == "YES" else (1.0 - current_ask)
         no_probability = 1.0 - yes_probability
         
-        # Get event end date if available
-        end_date = market.get("endDate", None)
+        # Get event end date - prefer gameStartTime/eventStartTime (more accurate for sports)
+        end_date = market.get("gameStartTime") or market.get("eventStartTime") or market.get("endDate")
         priority = market.get("_priority", 3)
         
         suggestion = {
@@ -161,48 +161,71 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
     markets = client.list_markets()
     logger.info(f"✅ Fetched {len(markets)} markets from Polymarket")
     
-    # Filter and sort markets by end date - prioritize those ending soon (next 24 hours)
+    # Filter ONLY for markets ending in the next 6 hours (or already live)
     now = int(time.time())
-    markets_with_end_date = []
-    markets_without_end_date = []
+    urgent_markets = []
     
     from datetime import datetime, timezone, timedelta
     now_dt = datetime.now(timezone.utc)
-    twenty_four_hours_from_now = now_dt + timedelta(hours=24)
+    six_hours_from_now = now_dt + timedelta(hours=6)
     
+    logger.info(f"🔥 FILTERING FOR URGENT MARKETS ONLY (next 6 hours or live)")
+    logger.info(f"⏰ Current time: {now_dt.strftime('%Y-%m-%d %H:%M UTC')}")
+    logger.info(f"⏰ Cut-off time: {six_hours_from_now.strftime('%Y-%m-%d %H:%M UTC')}")
+    
+    filtered_count = 0
     for market in markets:
-        end_date_str = market.get("endDate")
+        # Prefer gameStartTime/eventStartTime over endDate (more accurate for events)
+        end_date_str = market.get("gameStartTime") or market.get("eventStartTime") or market.get("endDate")
         if end_date_str:
             try:
-                # Parse ISO format: "2024-06-17T12:00:00Z"
-                end_dt = datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
-                
-                # Check if ending in the next 24 hours
-                if now_dt < end_dt <= twenty_four_hours_from_now:
-                    # Add time_to_end for sorting (in seconds)
-                    time_to_end = (end_dt - now_dt).total_seconds()
-                    market['_time_to_end'] = time_to_end
-                    market['_priority'] = 1  # High priority
-                    markets_with_end_date.append(market)
+                # Parse ISO format: "2024-06-17T12:00:00Z" or "2024-06-17 12:00:00+00"
+                if isinstance(end_date_str, str):
+                    if ' ' in end_date_str and '+' in end_date_str:
+                        # Format: "2025-11-09 03:00:00+00"
+                        end_dt = datetime.fromisoformat(end_date_str.replace('+00', '+00:00'))
+                    else:
+                        # Format: "2025-11-09T03:00:00Z"
+                        end_dt = datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
                 else:
-                    # Still include, but lower priority
-                    market['_priority'] = 2
-                    markets_without_end_date.append(market)
-            except Exception:
-                market['_priority'] = 3
-                markets_without_end_date.append(market)
+                    # If it's already a datetime object
+                    end_dt = end_date_str
+                
+                # Calculate time until event
+                time_until = (end_dt - now_dt).total_seconds()
+                hours_until = time_until / 3600
+                
+                # ONLY include if:
+                # 1. Event is within next 6 hours, OR
+                # 2. Event already started (negative time) but market still open (LIVE)
+                if hours_until <= 6:  # This includes negative values (already started)
+                    market['_time_to_end'] = time_until
+                    market['_priority'] = 1
+                    urgent_markets.append(market)
+                    
+                    if hours_until < 0:
+                        logger.info(f"🔴 LIVE: {market.get('question', '')[:60]} (started {abs(hours_until):.1f}h ago)")
+                    else:
+                        logger.info(f"🟡 URGENT: {market.get('question', '')[:60]} (in {hours_until:.1f}h)")
+                else:
+                    filtered_count += 1
+            except Exception as e:
+                # Skip markets with invalid dates
+                filtered_count += 1
+                logger.debug(f"Skipped market due to date parse error: {e}")
         else:
-            market['_priority'] = 3
-            markets_without_end_date.append(market)
+            # Skip markets without dates
+            filtered_count += 1
     
-    # Sort markets ending soon by how soon they end (soonest first)
-    markets_with_end_date.sort(key=lambda m: m.get('_time_to_end', float('inf')))
+    # Sort by urgency (soonest/live first)
+    urgent_markets.sort(key=lambda m: m.get('_time_to_end', float('inf')))
     
-    # Prioritize markets ending soon, then others
-    prioritized_markets = markets_with_end_date + markets_without_end_date
+    logger.info("=" * 80)
+    logger.info(f"✅ Found {len(urgent_markets)} URGENT markets (next 6h or live)")
+    logger.info(f"❌ Filtered out {filtered_count} non-urgent markets")
+    logger.info("=" * 80)
     
-    logger.info(f"🕐 Found {len(markets_with_end_date)} markets ending in next 24 hours")
-    logger.info(f"⏰ Prioritizing soonest-ending markets first")
+    prioritized_markets = urgent_markets
     
     suggestions: list[dict[str, Any]] = []
     
@@ -269,7 +292,7 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
     logger.info("=" * 80)
     logger.info("ANALYSIS SUMMARY:")
     logger.info(f"  Total markets fetched: {len(markets)}")
-    logger.info(f"  Markets ending in 24h: {len(markets_with_end_date)}")
+    logger.info(f"  🔥 Urgent markets (≤6h): {len(prioritized_markets)}")
     logger.info(f"  Markets processed: {min(completed, len(prioritized_markets))}/{len(prioritized_markets)}")
     logger.info(f"  ✅ SUGGESTIONS CREATED: {len(suggestions)}")
     logger.info(f"  Processing method: Parallel (10 threads)")

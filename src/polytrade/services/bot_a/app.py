@@ -29,6 +29,12 @@ class CustomRangeStates(StatesGroup):
     waiting_for_range = State()
 
 
+# Workaround for webhook-based FSM: track users waiting for custom range
+# In webhook mode, MemoryStorage doesn't persist between requests
+# So we use a simple dict to track which users are in "waiting for custom range" mode
+_users_waiting_for_custom_range: set[int] = set()
+
+
 def get_bot() -> Bot:
     if not settings.bot_a_token:
         # Return a bot with an obviously invalid token is risky; better to raise when used
@@ -168,7 +174,7 @@ async def cmd_suggest(message: types.Message) -> None:
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("range:"))
-async def on_range_select(callback: types.CallbackQuery) -> None:
+async def on_range_select(callback: types.CallbackQuery, state: FSMContext) -> None:
     """Handle range selection and run analyzer."""
     try:
         if not callback.data:
@@ -179,11 +185,6 @@ async def on_range_select(callback: types.CallbackQuery) -> None:
         
         # Handle custom range - ask user for input
         if len(parts) >= 2 and parts[1] == "custom":
-            from aiogram.fsm.context import FSMContext
-            
-            # Get FSM context
-            state = FSMContext(storage=storage, key=callback.message.chat.id)
-            
             await callback.message.edit_text(
                 "🔢 <b>Custom Probability Range</b>\n\n"
                 "Enter your desired range in the format:\n"
@@ -200,6 +201,12 @@ async def on_range_select(callback: types.CallbackQuery) -> None:
             
             # Set state to wait for custom range input
             await state.set_state(CustomRangeStates.waiting_for_range)
+            
+            # Also track in our workaround dict (for webhook mode)
+            user_id = callback.from_user.id
+            _users_waiting_for_custom_range.add(user_id)
+            logger.info(f"User {user_id} is now waiting for custom range input")
+            
             await callback.answer()
             return
         
@@ -286,6 +293,14 @@ async def on_range_select(callback: types.CallbackQuery) -> None:
 async def process_custom_range(message: types.Message, state: FSMContext) -> None:
     """Process user's custom range input."""
     try:
+        user_id = message.from_user.id
+        
+        # Check if user is in our workaround set (for webhook mode)
+        if user_id not in _users_waiting_for_custom_range:
+            logger.warning(f"User {user_id} sent message but not in waiting set")
+            return
+        
+        logger.info(f"Processing custom range input from user {user_id}: {message.text}")
         user_input = message.text.strip()
         
         # Parse input format: "min-max"
@@ -344,8 +359,10 @@ async def process_custom_range(message: types.Message, state: FSMContext) -> Non
             )
             return
         
-        # Clear state
+        # Clear state and remove from workaround set
         await state.clear()
+        _users_waiting_for_custom_range.discard(user_id)
+        logger.info(f"User {user_id} removed from waiting set")
         
         # Convert to decimal
         min_price = min_pct / 100.0
@@ -420,6 +437,9 @@ async def process_custom_range(message: types.Message, state: FSMContext) -> Non
             parse_mode="HTML"
         )
         await state.clear()
+        # Clean up workaround set on error
+        user_id = message.from_user.id
+        _users_waiting_for_custom_range.discard(user_id)
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("amt:"))
@@ -560,9 +580,20 @@ async def handle_unknown(message: types.Message, state: FSMContext) -> None:
     Note: This is a catch-all handler, so it should ignore messages
     when the user is in an FSM state (e.g., entering custom range).
     """
+    user_id = message.from_user.id
+    
+    # Check workaround set first (for webhook mode)
+    if user_id in _users_waiting_for_custom_range:
+        logger.info(f"User {user_id} is waiting for custom range, skipping unknown handler")
+        # User is waiting for custom range input, let the state handler process it
+        # Forward to process_custom_range directly
+        await process_custom_range(message, state)
+        return
+    
     # Check if user is in any state - if so, don't handle (let state handler process it)
     current_state = await state.get_state()
     if current_state is not None:
+        logger.info(f"User {user_id} is in state {current_state}, skipping unknown handler")
         # User is in a state, this message should be handled by the state handler
         return
     
@@ -579,11 +610,20 @@ async def handle_unknown(message: types.Message, state: FSMContext) -> None:
 
 @app.post("/webhook")
 async def telegram_webhook(req: Request) -> dict[str, bool]:
-    data = await req.json()
-    update = types.Update.model_validate(data)
-    bot = get_bot()
-    await dp.feed_update(bot=bot, update=update)
-    return {"ok": True}
+    try:
+        data = await req.json()
+        update = types.Update.model_validate(data)
+        bot = get_bot()
+        
+        # Process the update through the dispatcher with storage
+        await dp.feed_update(bot=bot, update=update)
+        
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Error in webhook: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"ok": False}
 
 
 @app.get("/health")
