@@ -807,14 +807,48 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
             
             logger.info(f"Trade result: {result}")
             
+            # Validate result is a dict (not HTML error page or string)
+            if not isinstance(result, dict):
+                logger.error(f"Unexpected result type: {type(result)}")
+                
+                # Check if it's an HTML error page
+                result_str = str(result)
+                if "<!DOCTYPE" in result_str or "<html" in result_str.lower():
+                    error_detail = "Server returned an error page. Service may be down."
+                else:
+                    error_detail = result_str[:200]  # Truncate to avoid parsing issues
+                
+                error_msg = (
+                    f"❌ <b>Trade Execution Error</b>\n\n"
+                    f"<code>{error_detail}</code>\n\n"
+                    f"💡 <b>Possible causes:</b>\n"
+                    f"• Service temporarily unavailable\n"
+                    f"• Wallet not configured\n"
+                    f"• Network connectivity issue\n\n"
+                    f"📧 Contact support if this persists."
+                )
+                if loading_msg_sent:
+                    await callback.message.edit_text(error_msg, parse_mode="HTML")
+                else:
+                    await callback.message.answer(error_msg, parse_mode="HTML")
+                return
+            
         except Exception as e:
             logger.error(f"Error in place_trade: {e}")
             import traceback
             logger.error(traceback.format_exc())
             
+            # Sanitize error message for Telegram HTML parsing
+            error_str = str(e)
+            # Remove HTML tags and special characters that break parsing
+            import re
+            error_str = re.sub(r'<[^>]+>', '', error_str)  # Remove HTML tags
+            error_str = error_str.replace('&', 'and')  # Replace ampersands
+            error_str = error_str[:300]  # Truncate to avoid too long messages
+            
             error_msg = (
                 f"❌ <b>Trade Execution Error</b>\n\n"
-                f"<code>{str(e)}</code>\n\n"
+                f"<code>{error_str}</code>\n\n"
                 f"💡 <b>Possible causes:</b>\n"
                 f"• Wallet not configured\n"
                 f"• Insufficient balance\n"
@@ -828,12 +862,17 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
                 await callback.message.answer(error_msg, parse_mode="HTML")
             return
         
-        # Handle trade result
+        # Handle trade result - sanitize all output to avoid HTML parsing errors
         if result.get("status") == "OPEN":
             side_emoji = "📈" if side.upper().startswith("BUY") else "📉"
+            
+            # Sanitize market title
+            market_title = suggestion.get('title', 'N/A')[:60]
+            market_title = market_title.replace('&', 'and').replace('<', '').replace('>', '')
+            
             success_msg = (
                 f"✅ <b>Trade Placed Successfully!</b>\n\n"
-                f"Market: {suggestion.get('title', 'N/A')[:60]}\n"
+                f"Market: {market_title}\n"
                 f"{side_emoji} Side: {side.upper()}\n"
                 f"📊 Size: {size} contracts\n"
                 f"💵 Price: ${price:.4f}\n"
@@ -844,7 +883,13 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
             await callback.message.edit_text(success_msg, parse_mode="HTML")
             
         elif result.get("status") == "FAILED":
+            # Sanitize error detail
             error_detail = result.get("error", "Unknown error")
+            import re
+            error_detail = re.sub(r'<[^>]+>', '', str(error_detail))  # Remove HTML tags
+            error_detail = error_detail.replace('&', 'and')
+            error_detail = error_detail[:200]  # Truncate
+            
             fail_msg = (
                 f"❌ <b>Trade Failed</b>\n\n"
                 f"<code>{error_detail}</code>\n\n"
@@ -857,8 +902,10 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
             await callback.message.edit_text(fail_msg, parse_mode="HTML")
             
         else:
-            # Unknown status
-            status = result.get('status', 'UNKNOWN')
+            # Unknown status - sanitize
+            status = str(result.get('status', 'UNKNOWN'))
+            status = status.replace('&', 'and').replace('<', '').replace('>', '')[:50]
+            
             unknown_msg = (
                 f"⚠️ <b>Unknown Trade Status</b>\n\n"
                 f"Status: <code>{status}</code>\n\n"
@@ -875,9 +922,16 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
         logger.error(traceback.format_exc())
         
         try:
+            # Sanitize error for Telegram HTML parsing
+            error_str = str(e)
+            import re
+            error_str = re.sub(r'<[^>]+>', '', error_str)  # Remove HTML tags
+            error_str = error_str.replace('&', 'and')
+            error_str = error_str[:200]  # Truncate
+            
             error_msg = (
                 f"❌ <b>Unexpected Error</b>\n\n"
-                f"<code>{str(e)[:200]}</code>\n\n"
+                f"<code>{error_str}</code>\n\n"
                 f"💡 <b>Troubleshooting:</b>\n"
                 f"• Try /balance to check your account\n"
                 f"• Use /suggest for new opportunities\n"

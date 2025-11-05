@@ -166,17 +166,20 @@ def run_analysis(
     markets = client.list_markets()
     logger.info(f"✅ Fetched {len(markets)} markets from Polymarket")
     
-    # Filter ONLY for markets ending in the specified time window (or already live)
+    # Filter for markets in time window with 2-hour lookback for live games
+    # Window: UTC-2h (games that started up to 2h ago) to UTC+(time_window_hours)h
     now = int(time.time())
     urgent_markets = []
     
     from datetime import datetime, timezone, timedelta
     now_dt = datetime.now(timezone.utc)
+    lookback_time = now_dt - timedelta(hours=2)  # 2 hours ago
     cutoff_time = now_dt + timedelta(hours=time_window_hours)
     
-    logger.info(f"🔥 FILTERING FOR MARKETS IN TIME WINDOW: {time_window_hours}h")
+    logger.info(f"🔥 FILTERING FOR MARKETS IN TIME WINDOW: -2h to +{time_window_hours}h")
     logger.info(f"⏰ Current time: {now_dt.strftime('%Y-%m-%d %H:%M UTC')}")
-    logger.info(f"⏰ Cut-off time: {cutoff_time.strftime('%Y-%m-%d %H:%M UTC')}")
+    logger.info(f"⏰ Lookback time: {lookback_time.strftime('%Y-%m-%d %H:%M UTC')} (games started up to 2h ago)")
+    logger.info(f"⏰ Forward cutoff: {cutoff_time.strftime('%Y-%m-%d %H:%M UTC')}")
     
     filtered_count = 0
     for market in markets:
@@ -200,10 +203,9 @@ def run_analysis(
                 time_until = (end_dt - now_dt).total_seconds()
                 hours_until = time_until / 3600
                 
-                # ONLY include if:
-                # 1. Event is within the time window, OR
-                # 2. Event already started (negative time) but market still open (LIVE)
-                if hours_until <= time_window_hours:  # This includes negative values (already started)
+                # Include if within window: -2 hours (started recently) to +time_window_hours (starting soon)
+                # This catches live games (up to 2h after start) and upcoming games
+                if -2 <= hours_until <= time_window_hours:
                     market['_time_to_end'] = time_until
                     market['_priority'] = 1
                     urgent_markets.append(market)
@@ -211,7 +213,7 @@ def run_analysis(
                     if hours_until < 0:
                         logger.info(f"🔴 LIVE: {market.get('question', '')[:60]} (started {abs(hours_until):.1f}h ago)")
                     else:
-                        logger.info(f"🟡 URGENT: {market.get('question', '')[:60]} (in {hours_until:.1f}h)")
+                        logger.info(f"🟡 UPCOMING: {market.get('question', '')[:60]} (in {hours_until:.1f}h)")
                 else:
                     filtered_count += 1
             except Exception as e:
@@ -226,7 +228,7 @@ def run_analysis(
     urgent_markets.sort(key=lambda m: m.get('_time_to_end', float('inf')))
     
     logger.info("=" * 80)
-    logger.info(f"✅ Found {len(urgent_markets)} markets in {time_window_hours}h window")
+    logger.info(f"✅ Found {len(urgent_markets)} markets in time window (-2h to +{time_window_hours}h)")
     logger.info(f"❌ Filtered out {filtered_count} markets outside window")
     logger.info("=" * 80)
     
@@ -297,7 +299,7 @@ def run_analysis(
     logger.info("=" * 80)
     logger.info("ANALYSIS SUMMARY:")
     logger.info(f"  Total markets fetched: {len(markets)}")
-    logger.info(f"  🔥 Markets in {time_window_hours}h window: {len(prioritized_markets)}")
+    logger.info(f"  🔥 Markets in time window (-2h to +{time_window_hours}h): {len(prioritized_markets)}")
     logger.info(f"  Markets processed: {min(completed, len(prioritized_markets))}/{len(prioritized_markets)}")
     logger.info(f"  ✅ SUGGESTIONS CREATED: {len(suggestions)}")
     logger.info(f"  Processing method: Parallel (10 threads)")
