@@ -47,10 +47,16 @@ def _analyze_single_market(
         liquidity = float(market.get("liquidityClob", 0))
         
         # Check 3: Check all tokens to find one with competitive pricing
+        # Markets can have multiple outcomes (YES/NO, or multiple teams/options)
         best_token_id = None
         best_ask = None
         best_bid = None
         outcome = "YES"
+        
+        # Get outcome names from market (can be YES/NO or custom like team names)
+        outcomes = market.get("outcomes", ["YES", "NO"])
+        if not isinstance(outcomes, list):
+            outcomes = ["YES", "NO"]
         
         for i, tid in enumerate(clob_token_ids):
             try:
@@ -63,7 +69,8 @@ def _analyze_single_market(
                     best_token_id = tid
                     best_ask = ask_temp
                     best_bid = bid_temp
-                    outcome = "YES" if i == 0 else "NO"
+                    # Use actual outcome name from market (handles multi-outcome markets)
+                    outcome = outcomes[i] if i < len(outcomes) else f"Option_{i+1}"
                     break
             except Exception as e:
                 # Rate limit or other error - continue to next token
@@ -92,10 +99,18 @@ def _analyze_single_market(
         # Create suggestion
         side = f"BUY_{outcome.upper()}" if outcome else "BUY_YES"
         
-        # Calculate market probabilities (YES vs NO percentages)
-        # The price represents the probability of that outcome
-        yes_probability = current_ask if outcome == "YES" else (1.0 - current_ask)
-        no_probability = 1.0 - yes_probability
+        # Calculate market probabilities
+        # For binary markets (YES/NO), calculate both probabilities
+        # For multi-outcome markets, just use the current price as probability
+        if len(outcomes) == 2 and "YES" in [o.upper() for o in outcomes]:
+            # Binary YES/NO market
+            yes_probability = current_ask if outcome.upper() == "YES" else (1.0 - current_ask)
+            no_probability = 1.0 - yes_probability
+        else:
+            # Multi-outcome market or non-standard binary
+            # The price of this outcome is its probability
+            yes_probability = current_ask
+            no_probability = 1.0 - current_ask  # Simplified for display
         
         # Get event end date - prefer gameStartTime/eventStartTime (more accurate for sports)
         end_date = market.get("gameStartTime") or market.get("eventStartTime") or market.get("endDate")
@@ -137,7 +152,8 @@ def run_analysis(
     max_suggestions: int = 5, 
     min_price: float = 0.80, 
     max_price: float = 0.90,
-    time_window_hours: float = 6.0
+    time_window_hours: float = 6.0,
+    live_only: bool = False
 ) -> list[dict[str, Any]]:
     """Analyze markets from Polymarket and create trade suggestions.
     
@@ -166,20 +182,25 @@ def run_analysis(
     markets = client.list_markets()
     logger.info(f"✅ Fetched {len(markets)} markets from Polymarket")
     
-    # Filter for markets in time window with 2-hour lookback for live games
-    # Window: UTC-2h (games that started up to 2h ago) to UTC+(time_window_hours)h
+    # Filter for markets in time window with 4-hour lookback for live games
+    # Window: UTC-4h (games that started up to 4h ago) to UTC+(time_window_hours)h
     now = int(time.time())
     urgent_markets = []
     
     from datetime import datetime, timezone, timedelta
     now_dt = datetime.now(timezone.utc)
-    lookback_time = now_dt - timedelta(hours=2)  # 2 hours ago
+    lookback_time = now_dt - timedelta(hours=4)  # 4 hours ago
     cutoff_time = now_dt + timedelta(hours=time_window_hours)
     
-    logger.info(f"🔥 FILTERING FOR MARKETS IN TIME WINDOW: -2h to +{time_window_hours}h")
-    logger.info(f"⏰ Current time: {now_dt.strftime('%Y-%m-%d %H:%M UTC')}")
-    logger.info(f"⏰ Lookback time: {lookback_time.strftime('%Y-%m-%d %H:%M UTC')} (games started up to 2h ago)")
-    logger.info(f"⏰ Forward cutoff: {cutoff_time.strftime('%Y-%m-%d %H:%M UTC')}")
+    if live_only:
+        logger.info(f"🔴 FILTERING FOR LIVE GAMES ONLY (started within last 4h)")
+        logger.info(f"⏰ Current time: {now_dt.strftime('%Y-%m-%d %H:%M UTC')}")
+        logger.info(f"⏰ Lookback window: 4 hours ago")
+    else:
+        logger.info(f"🔥 FILTERING FOR MARKETS IN TIME WINDOW: -4h to +{time_window_hours}h")
+        logger.info(f"⏰ Current time: {now_dt.strftime('%Y-%m-%d %H:%M UTC')}")
+        logger.info(f"⏰ Lookback time: {lookback_time.strftime('%Y-%m-%d %H:%M UTC')} (games started up to 4h ago)")
+        logger.info(f"⏰ Forward cutoff: {cutoff_time.strftime('%Y-%m-%d %H:%M UTC')}")
     
     filtered_count = 0
     for market in markets:
@@ -203,19 +224,29 @@ def run_analysis(
                 time_until = (end_dt - now_dt).total_seconds()
                 hours_until = time_until / 3600
                 
-                # Include if within window: -2 hours (started recently) to +time_window_hours (starting soon)
-                # This catches live games (up to 2h after start) and upcoming games
-                if -2 <= hours_until <= time_window_hours:
-                    market['_time_to_end'] = time_until
-                    market['_priority'] = 1
-                    urgent_markets.append(market)
-                    
-                    if hours_until < 0:
+                # Filter based on mode
+                if live_only:
+                    # LIVE ONLY: Only include games that already started (but within 4h)
+                    if -4 <= hours_until < 0:
+                        market['_time_to_end'] = time_until
+                        market['_priority'] = 1
+                        urgent_markets.append(market)
                         logger.info(f"🔴 LIVE: {market.get('question', '')[:60]} (started {abs(hours_until):.1f}h ago)")
                     else:
-                        logger.info(f"🟡 UPCOMING: {market.get('question', '')[:60]} (in {hours_until:.1f}h)")
+                        filtered_count += 1
                 else:
-                    filtered_count += 1
+                    # NORMAL: Include live games (up to 4h ago) AND upcoming games
+                    if -4 <= hours_until <= time_window_hours:
+                        market['_time_to_end'] = time_until
+                        market['_priority'] = 1
+                        urgent_markets.append(market)
+                        
+                        if hours_until < 0:
+                            logger.info(f"🔴 LIVE: {market.get('question', '')[:60]} (started {abs(hours_until):.1f}h ago)")
+                        else:
+                            logger.info(f"🟡 UPCOMING: {market.get('question', '')[:60]} (in {hours_until:.1f}h)")
+                    else:
+                        filtered_count += 1
             except Exception as e:
                 # Skip markets with invalid dates
                 filtered_count += 1
@@ -228,7 +259,10 @@ def run_analysis(
     urgent_markets.sort(key=lambda m: m.get('_time_to_end', float('inf')))
     
     logger.info("=" * 80)
-    logger.info(f"✅ Found {len(urgent_markets)} markets in time window (-2h to +{time_window_hours}h)")
+    if live_only:
+        logger.info(f"✅ Found {len(urgent_markets)} LIVE markets (in progress)")
+    else:
+        logger.info(f"✅ Found {len(urgent_markets)} markets in time window (-4h to +{time_window_hours}h)")
     logger.info(f"❌ Filtered out {filtered_count} markets outside window")
     logger.info("=" * 80)
     
@@ -299,7 +333,7 @@ def run_analysis(
     logger.info("=" * 80)
     logger.info("ANALYSIS SUMMARY:")
     logger.info(f"  Total markets fetched: {len(markets)}")
-    logger.info(f"  🔥 Markets in time window (-2h to +{time_window_hours}h): {len(prioritized_markets)}")
+    logger.info(f"  🔥 Markets in time window (-4h to +{time_window_hours}h): {len(prioritized_markets)}")
     logger.info(f"  Markets processed: {min(completed, len(prioritized_markets))}/{len(prioritized_markets)}")
     logger.info(f"  ✅ SUGGESTIONS CREATED: {len(suggestions)}")
     logger.info(f"  Processing method: Parallel (10 threads)")

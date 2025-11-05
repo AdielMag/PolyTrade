@@ -405,8 +405,8 @@ class PolymarketClient:
             params = {
                 "closed": "false",  # Only active markets
                 "limit": 500,       # Fetch more markets (multithreading makes this fast)
-                "order": "id",      # Order by ID
-                "ascending": "false" # Newest first
+                "order": "volume24hr",  # Sort by trading volume to get most active/live markets first
+                "ascending": "false" # Highest volume first
             }
             
             logger.info(f"Fetching markets from Polymarket Gamma API: {url}")

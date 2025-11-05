@@ -38,6 +38,12 @@ _users_waiting_for_time_window: set[int] = set()
 # Store user's selected time window (user_id -> hours)
 _user_time_windows: dict[int, float] = {}
 
+# Store user's suggestion message IDs for cleanup (user_id -> list of message_ids)
+_user_suggestion_messages: dict[int, list[int]] = {}
+
+# Store pagination state (user_id -> offset)
+_user_suggestion_offset: dict[int, int] = {}
+
 
 def get_bot() -> Bot:
     if not settings.bot_a_token:
@@ -143,23 +149,32 @@ async def cmd_suggest(message: types.Message) -> None:
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="🔴 6 Hours (Live & Urgent)", callback_data="time:6")
+                InlineKeyboardButton(text="🔴 LIVE Only (In Progress)", callback_data="time:live")
             ],
             [
-                InlineKeyboardButton(text="🟡 12 Hours (Today's Games)", callback_data="time:12")
+                InlineKeyboardButton(text="🟠 6 Hours (Live & Soon)", callback_data="time:6")
             ],
             [
-                InlineKeyboardButton(text="🟢 24 Hours (Next Day)", callback_data="time:24")
+                InlineKeyboardButton(text="🟡 12 Hours (Today)", callback_data="time:12")
+            ],
+            [
+                InlineKeyboardButton(text="🟢 24 Hours (Tomorrow)", callback_data="time:24")
             ],
             [
                 InlineKeyboardButton(text="🔍 Custom Window", callback_data="time:custom")
             ]
         ])
         
+        # Clear any previous suggestion messages and pagination state
+        user_id = message.from_user.id
+        _user_suggestion_messages[user_id] = []
+        _user_suggestion_offset[user_id] = 0
+        
         await message.answer(
             "⏰ <b>Select Time Window</b>\n\n"
             "How far ahead do you want to look?\n\n"
-            "• <b>6 Hours</b> - Live games & starting soon\n"
+            "• <b>LIVE Only</b> - Games in progress now\n"
+            "• <b>6 Hours</b> - Live & starting soon\n"
             "• <b>12 Hours</b> - Today's schedule\n"
             "• <b>24 Hours</b> - Tomorrow's games too\n"
             "• <b>Custom</b> - Set your own window\n\n"
@@ -184,6 +199,47 @@ async def on_time_window_select(callback: types.CallbackQuery, state: FSMContext
         
         parts = callback.data.split(":")
         user_id = callback.from_user.id
+        
+        # Handle LIVE only filter (games that already started)
+        if len(parts) >= 2 and parts[1] == "live":
+            _user_time_windows[user_id] = -1.0  # Special value for LIVE only
+            logger.info(f"User {user_id} selected LIVE games only")
+            
+            # Now show probability range selection
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🎯 80-90% (Strong Favorites)", callback_data="range:80:90")
+                ],
+                [
+                    InlineKeyboardButton(text="⚖️ 60-75% (Moderate)", callback_data="range:60:75")
+                ],
+                [
+                    InlineKeyboardButton(text="🎲 40-60% (Balanced)", callback_data="range:40:60")
+                ],
+                [
+                    InlineKeyboardButton(text="📊 20-40% (Underdogs)", callback_data="range:20:40")
+                ],
+                [
+                    InlineKeyboardButton(text="🔍 Custom Range", callback_data="range:custom")
+                ]
+            ])
+            
+            await callback.message.edit_text(
+                f"⏰ Time window: <b>LIVE ONLY</b> ✅\n\n"
+                f"🎯 <b>Select Probability Range</b>\n\n"
+                "Choose what type of bets you want to see:\n\n"
+                "• <b>80-90%</b> - Heavy favorites (safer)\n"
+                "• <b>60-75%</b> - Moderate favorites\n"
+                "• <b>40-60%</b> - Balanced/toss-up games\n"
+                "• <b>20-40%</b> - Underdogs (riskier)",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            
+            await callback.answer()
+            return
         
         # Handle custom time window
         if len(parts) >= 2 and parts[1] == "custom":
@@ -276,6 +332,10 @@ async def on_range_select(callback: types.CallbackQuery, state: FSMContext) -> N
         # Get user's time window (default to 6 hours if not set)
         time_window_hours = _user_time_windows.get(user_id, 6.0)
         
+        # Clear previous suggestion messages
+        _user_suggestion_messages[user_id] = []
+        _user_suggestion_offset[user_id] = 0
+        
         parts = callback.data.split(":")
         
         # Handle custom range - ask user for input
@@ -325,12 +385,16 @@ async def on_range_select(callback: types.CallbackQuery, state: FSMContext) -> N
         )
         
         # Run analyzer with user's selected range and time window
-        logger.info(f"User requested suggestions: {min_pct}-{max_pct}% in next {time_window_hours}h")
+        # Request more than 5 to check if there are additional suggestions
+        live_only = (time_window_hours == -1.0)
+        logger.info(f"User requested suggestions: {min_pct}-{max_pct}%, window={time_window_hours}h, live_only={live_only}")
+        
         suggestions = run_analysis(
-            max_suggestions=5, 
+            max_suggestions=10,  # Get 10 to check if there are more
             min_price=min_price, 
             max_price=max_price,
-            time_window_hours=time_window_hours
+            time_window_hours=time_window_hours,
+            live_only=live_only
         )
         
         logger.info(f"✅ Analyzer completed - generated {len(suggestions)} suggestions")
@@ -354,14 +418,16 @@ async def on_range_select(callback: types.CallbackQuery, state: FSMContext) -> N
             await callback.message.answer(no_suggestions_msg, parse_mode="HTML")
             return
         
-        # Get the suggestion IDs from firestore to pass to keyboards
-        # The suggestions returned by run_analysis have been saved to firestore
-        # We need to query them back to get their document IDs
-        logger.info(f"📤 Sending {len(suggestions)} suggestions to user...")
+        # Send first 5 suggestions and show "Load More" if there are more
+        logger.info(f"📤 Sending up to 5 suggestions to user (total: {len(suggestions)})...")
         db = get_client()
         sent_count = 0
         
-        for i, s in enumerate(suggestions, 1):
+        # Send first 5
+        suggestions_to_show = suggestions[:5]
+        has_more = len(suggestions) > 5
+        
+        for i, s in enumerate(suggestions_to_show, 1):
             try:
                 # Query for this suggestion by tokenId to get its document ID
                 snap = db.collection("suggestions").where("tokenId", "==", s.get("tokenId", "")).where("status", "==", "OPEN").limit(1).get()
@@ -375,13 +441,32 @@ async def on_range_select(callback: types.CallbackQuery, state: FSMContext) -> N
                         s.get("endDate", None)
                     )
                     kb = amount_presets_kb(suggestion_id=doc.id, token_id=s.get("tokenId", ""), side=s.get("side", ""))
-                    await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+                    sent_msg = await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+                    
+                    # Track message ID for later cleanup
+                    _user_suggestion_messages[user_id].append(sent_msg.message_id)
+                    
                     sent_count += 1
-                    logger.info(f"✅ Sent suggestion {i}/{len(suggestions)}")
+                    logger.info(f"✅ Sent suggestion {i}/{len(suggestions_to_show)}")
             except Exception as send_err:
                 logger.error(f"❌ Error sending suggestion {i}: {send_err}")
         
-        logger.info(f"✅ Finished sending {sent_count}/{len(suggestions)} suggestions to user")
+        # Show "Load More" button if there are more suggestions
+        if has_more:
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            load_more_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📥 Load 5 More Suggestions", callback_data="loadmore:5")]
+            ])
+            load_more_msg = await callback.message.answer(
+                f"💡 <b>Showing 5 of {len(suggestions)} suggestions</b>\n\n"
+                f"Click below to load more:",
+                reply_markup=load_more_kb,
+                parse_mode="HTML"
+            )
+            _user_suggestion_messages[user_id].append(load_more_msg.message_id)
+            _user_suggestion_offset[user_id] = 5  # Track offset for next load
+        
+        logger.info(f"✅ Finished sending {sent_count} suggestions to user")
         await callback.answer()  # Acknowledge the callback
         return  # Explicitly return to end the function
     except Exception as e:
@@ -640,8 +725,52 @@ async def process_custom_range(message: types.Message, state: FSMContext) -> Non
         _users_waiting_for_custom_range.discard(user_id)
 
 
+@dp.callback_query(lambda c: c.data and c.data.startswith("loadmore:"))
+async def on_load_more(callback: types.CallbackQuery) -> None:
+    """Handle load more suggestions button."""
+    try:
+        user_id = callback.from_user.id
+        
+        # Delete the "Load More" button message
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        
+        await callback.answer("⏳ Loading more...")
+        
+        # Get stored parameters
+        time_window_hours = _user_time_windows.get(user_id, 6.0)
+        # TODO: Store and retrieve min_price/max_price from previous query
+        # For now, just inform user to run /suggest again
+        
+        await callback.message.answer(
+            "⚠️ <b>Load More Coming Soon!</b>\n\n"
+            "This feature is being enhanced.\n"
+            "For now, use /suggest again to see different results.\n\n"
+            "💡 Try adjusting your time window or probability range!",
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in load more: {e}")
+        await callback.answer("❌ Error loading more", show_alert=True)
+
+
 @dp.callback_query(lambda c: c.data and c.data.startswith("amt:"))
 async def on_amount_select(callback: types.CallbackQuery) -> None:
+    """Handle amount selection - also clears other suggestion messages."""
+    user_id = callback.from_user.id
+    
+    # Delete all other suggestion messages
+    if user_id in _user_suggestion_messages:
+        for msg_id in _user_suggestion_messages[user_id]:
+            try:
+                await callback.bot.delete_message(chat_id=callback.message.chat.id, message_id=msg_id)
+            except Exception:
+                pass  # Message may already be deleted
+        _user_suggestion_messages[user_id] = []
+    
     try:
         if not callback.data:
             await callback.answer("❌ Invalid selection data")
