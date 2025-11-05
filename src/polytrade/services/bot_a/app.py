@@ -24,15 +24,19 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 
-# States for custom range input
+# States for custom input
 class CustomRangeStates(StatesGroup):
     waiting_for_range = State()
+    waiting_for_time_window = State()
 
 
-# Workaround for webhook-based FSM: track users waiting for custom range
+# Workaround for webhook-based FSM: track users waiting for custom input
 # In webhook mode, MemoryStorage doesn't persist between requests
-# So we use a simple dict to track which users are in "waiting for custom range" mode
 _users_waiting_for_custom_range: set[int] = set()
+_users_waiting_for_time_window: set[int] = set()
+
+# Store user's selected time window (user_id -> hours)
+_user_time_windows: dict[int, float] = {}
 
 
 def get_bot() -> Bot:
@@ -132,9 +136,94 @@ async def cmd_balance(message: types.Message) -> None:
 
 @dp.message(Command("suggest"))
 async def cmd_suggest(message: types.Message) -> None:
-    """Ask user for their desired probability range."""
+    """Ask user for their desired time window first."""
     try:
-        # Create inline keyboard with common ranges
+        # Create inline keyboard with time window options
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔴 6 Hours (Live & Urgent)", callback_data="time:6")
+            ],
+            [
+                InlineKeyboardButton(text="🟡 12 Hours (Today's Games)", callback_data="time:12")
+            ],
+            [
+                InlineKeyboardButton(text="🟢 24 Hours (Next Day)", callback_data="time:24")
+            ],
+            [
+                InlineKeyboardButton(text="🔍 Custom Window", callback_data="time:custom")
+            ]
+        ])
+        
+        await message.answer(
+            "⏰ <b>Select Time Window</b>\n\n"
+            "How far ahead do you want to look?\n\n"
+            "• <b>6 Hours</b> - Live games & starting soon\n"
+            "• <b>12 Hours</b> - Today's schedule\n"
+            "• <b>24 Hours</b> - Tomorrow's games too\n"
+            "• <b>Custom</b> - Set your own window\n\n"
+            "💡 Shorter windows = more urgent opportunities!",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(
+            f"⚠️ <b>Error</b>\n\n<code>{str(e)}</code>",
+            parse_mode="HTML"
+        )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("time:"))
+async def on_time_window_select(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Handle time window selection, then ask for probability range."""
+    try:
+        if not callback.data:
+            await callback.answer("❌ Invalid selection")
+            return
+        
+        parts = callback.data.split(":")
+        user_id = callback.from_user.id
+        
+        # Handle custom time window
+        if len(parts) >= 2 and parts[1] == "custom":
+            await callback.message.edit_text(
+                "⏰ <b>Custom Time Window</b>\n\n"
+                "Enter the number of hours to look ahead:\n"
+                "👉 Enter a number (e.g., <code>8</code> for 8 hours)\n\n"
+                "<b>Examples:</b>\n"
+                "• <code>3</code> - Next 3 hours only\n"
+                "• <code>8</code> - Next 8 hours\n"
+                "• <code>48</code> - Next 2 days\n\n"
+                "💡 Valid range: 1-72 hours\n\n"
+                "📝 Type hours now:",
+                parse_mode="HTML"
+            )
+            
+            # Set state to wait for custom time window input
+            await state.set_state(CustomRangeStates.waiting_for_time_window)
+            _users_waiting_for_time_window.add(user_id)
+            logger.info(f"User {user_id} is now waiting for custom time window input")
+            
+            await callback.answer()
+            return
+        
+        if len(parts) < 2:
+            await callback.answer("❌ Invalid time window format")
+            return
+        
+        # Parse time window
+        try:
+            hours = float(parts[1])
+        except ValueError:
+            await callback.answer("❌ Invalid time window")
+            return
+        
+        # Store user's time window selection
+        _user_time_windows[user_id] = hours
+        logger.info(f"User {user_id} selected {hours}h time window")
+        
+        # Now show probability range selection
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -155,22 +244,23 @@ async def cmd_suggest(message: types.Message) -> None:
             ]
         ])
         
-        await message.answer(
-            "🎯 <b>Select Probability Range</b>\n\n"
+        await callback.message.edit_text(
+            f"⏰ Time window: <b>{int(hours)}h</b> ✅\n\n"
+            f"🎯 <b>Select Probability Range</b>\n\n"
             "Choose what type of bets you want to see:\n\n"
             "• <b>80-90%</b> - Heavy favorites (safer)\n"
             "• <b>60-75%</b> - Moderate favorites\n"
             "• <b>40-60%</b> - Balanced/toss-up games\n"
-            "• <b>20-40%</b> - Underdogs (riskier)\n\n"
-            "💡 Markets ending in next 24h are prioritized!",
+            "• <b>20-40%</b> - Underdogs (riskier)",
             reply_markup=keyboard,
             parse_mode="HTML"
         )
+        
+        await callback.answer()
+        
     except Exception as e:
-        await message.answer(
-            f"⚠️ <b>Error</b>\n\n<code>{str(e)}</code>",
-            parse_mode="HTML"
-        )
+        logger.error(f"Error in time window selection: {e}")
+        await callback.answer(f"⚠️ Error: {str(e)}", show_alert=True)
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("range:"))
@@ -180,6 +270,11 @@ async def on_range_select(callback: types.CallbackQuery, state: FSMContext) -> N
         if not callback.data:
             await callback.answer("❌ Invalid selection")
             return
+        
+        user_id = callback.from_user.id
+        
+        # Get user's time window (default to 6 hours if not set)
+        time_window_hours = _user_time_windows.get(user_id, 6.0)
         
         parts = callback.data.split(":")
         
@@ -222,16 +317,21 @@ async def on_range_select(callback: types.CallbackQuery, state: FSMContext) -> N
         # Update message to show analyzing
         await callback.message.edit_text(
             f"🔍 <b>Analyzing {min_pct}-{max_pct}% markets...</b>\n\n"
+            f"⏰ Time window: <b>{int(time_window_hours)}h</b>\n"
             f"⏳ Fetching data from Polymarket\n"
-            f"📊 Filtering {len([1])} markets\n"
             f"⚡ Using multithreading\n\n"
             f"<i>Please wait 10-20 seconds...</i>",
             parse_mode="HTML"
         )
         
-        # Run analyzer with user's selected range
-        logger.info(f"User requested suggestions with range {min_pct}-{max_pct}%")
-        suggestions = run_analysis(max_suggestions=5, min_price=min_price, max_price=max_price)
+        # Run analyzer with user's selected range and time window
+        logger.info(f"User requested suggestions: {min_pct}-{max_pct}% in next {time_window_hours}h")
+        suggestions = run_analysis(
+            max_suggestions=5, 
+            min_price=min_price, 
+            max_price=max_price,
+            time_window_hours=time_window_hours
+        )
         
         logger.info(f"✅ Analyzer completed - generated {len(suggestions)} suggestions")
         
@@ -287,6 +387,95 @@ async def on_range_select(callback: types.CallbackQuery, state: FSMContext) -> N
     except Exception as e:
         logger.error(f"Error in range selection: {e}")
         await callback.answer(f"⚠️ Error: {str(e)}", show_alert=True)
+
+
+@dp.message(CustomRangeStates.waiting_for_time_window)
+async def process_custom_time_window(message: types.Message, state: FSMContext) -> None:
+    """Process user's custom time window input."""
+    try:
+        user_id = message.from_user.id
+        
+        # Check if user is in our workaround set
+        if user_id not in _users_waiting_for_time_window:
+            logger.warning(f"User {user_id} sent message but not in time window waiting set")
+            return
+        
+        logger.info(f"Processing custom time window from user {user_id}: {message.text}")
+        user_input = message.text.strip()
+        
+        # Parse input as number
+        try:
+            hours = float(user_input)
+        except ValueError:
+            await message.answer(
+                "❌ <b>Invalid number</b>\n\n"
+                "Please enter a valid number of hours.\n"
+                "Example: <code>8</code>\n\n"
+                "Try again:",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Validate range
+        if hours < 1 or hours > 72:
+            await message.answer(
+                "❌ <b>Out of range</b>\n\n"
+                "Please enter between 1 and 72 hours.\n"
+                "Example: <code>8</code>\n\n"
+                "Try again:",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Clear state and store time window
+        await state.clear()
+        _users_waiting_for_time_window.discard(user_id)
+        _user_time_windows[user_id] = hours
+        logger.info(f"User {user_id} set custom time window: {hours}h")
+        
+        # Show probability range selection
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🎯 80-90% (Strong Favorites)", callback_data="range:80:90")
+            ],
+            [
+                InlineKeyboardButton(text="⚖️ 60-75% (Moderate)", callback_data="range:60:75")
+            ],
+            [
+                InlineKeyboardButton(text="🎲 40-60% (Balanced)", callback_data="range:40:60")
+            ],
+            [
+                InlineKeyboardButton(text="📊 20-40% (Underdogs)", callback_data="range:20:40")
+            ],
+            [
+                InlineKeyboardButton(text="🔍 Custom Range", callback_data="range:custom")
+            ]
+        ])
+        
+        await message.answer(
+            f"⏰ Time window: <b>{hours:.0f}h</b> ✅\n\n"
+            f"🎯 <b>Select Probability Range</b>\n\n"
+            "Choose what type of bets you want to see:\n\n"
+            "• <b>80-90%</b> - Heavy favorites (safer)\n"
+            "• <b>60-75%</b> - Moderate favorites\n"
+            "• <b>40-60%</b> - Balanced/toss-up games\n"
+            "• <b>20-40%</b> - Underdogs (riskier)",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error processing custom time window: {e}")
+        await message.answer(
+            f"⚠️ <b>Error</b>\n\n"
+            f"<code>{str(e)}</code>\n\n"
+            f"Please try /suggest again.",
+            parse_mode="HTML"
+        )
+        await state.clear()
+        _users_waiting_for_time_window.discard(user_id)
 
 
 @dp.message(CustomRangeStates.waiting_for_range)
@@ -364,6 +553,9 @@ async def process_custom_range(message: types.Message, state: FSMContext) -> Non
         _users_waiting_for_custom_range.discard(user_id)
         logger.info(f"User {user_id} removed from waiting set")
         
+        # Get user's time window (default to 6 hours)
+        time_window_hours = _user_time_windows.get(user_id, 6.0)
+        
         # Convert to decimal
         min_price = min_pct / 100.0
         max_price = max_pct / 100.0
@@ -371,6 +563,7 @@ async def process_custom_range(message: types.Message, state: FSMContext) -> Non
         # Show analyzing message
         analyzing_msg = await message.answer(
             f"🔍 <b>Analyzing {min_pct}-{max_pct}% markets...</b>\n\n"
+            f"⏰ Time window: <b>{int(time_window_hours)}h</b>\n"
             f"⏳ Fetching data from Polymarket\n"
             f"📊 Custom range selected\n"
             f"⚡ Using multithreading\n\n"
@@ -378,9 +571,14 @@ async def process_custom_range(message: types.Message, state: FSMContext) -> Non
             parse_mode="HTML"
         )
         
-        # Run analyzer with custom range
-        logger.info(f"User requested custom range: {min_pct}-{max_pct}%")
-        suggestions = run_analysis(max_suggestions=5, min_price=min_price, max_price=max_price)
+        # Run analyzer with custom range and time window
+        logger.info(f"User requested custom range: {min_pct}-{max_pct}% in next {time_window_hours}h")
+        suggestions = run_analysis(
+            max_suggestions=5, 
+            min_price=min_price, 
+            max_price=max_price,
+            time_window_hours=time_window_hours
+        )
         logger.info(f"✅ Analyzer completed - generated {len(suggestions)} suggestions")
         
         # Delete analyzing message
@@ -582,7 +780,12 @@ async def handle_unknown(message: types.Message, state: FSMContext) -> None:
     """
     user_id = message.from_user.id
     
-    # Check workaround set first (for webhook mode)
+    # Check workaround sets first (for webhook mode)
+    if user_id in _users_waiting_for_time_window:
+        logger.info(f"User {user_id} is waiting for custom time window, skipping unknown handler")
+        await process_custom_time_window(message, state)
+        return
+    
     if user_id in _users_waiting_for_custom_range:
         logger.info(f"User {user_id} is waiting for custom range, skipping unknown handler")
         # User is waiting for custom range input, let the state handler process it

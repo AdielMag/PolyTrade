@@ -133,7 +133,12 @@ def _analyze_single_market(
         return None
 
 
-def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: float = 0.90) -> list[dict[str, Any]]:
+def run_analysis(
+    max_suggestions: int = 5, 
+    min_price: float = 0.80, 
+    max_price: float = 0.90,
+    time_window_hours: float = 6.0
+) -> list[dict[str, Any]]:
     """Analyze markets from Polymarket and create trade suggestions.
     
     Smart analyzer that:
@@ -161,17 +166,17 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
     markets = client.list_markets()
     logger.info(f"✅ Fetched {len(markets)} markets from Polymarket")
     
-    # Filter ONLY for markets ending in the next 6 hours (or already live)
+    # Filter ONLY for markets ending in the specified time window (or already live)
     now = int(time.time())
     urgent_markets = []
     
     from datetime import datetime, timezone, timedelta
     now_dt = datetime.now(timezone.utc)
-    six_hours_from_now = now_dt + timedelta(hours=6)
+    cutoff_time = now_dt + timedelta(hours=time_window_hours)
     
-    logger.info(f"🔥 FILTERING FOR URGENT MARKETS ONLY (next 6 hours or live)")
+    logger.info(f"🔥 FILTERING FOR MARKETS IN TIME WINDOW: {time_window_hours}h")
     logger.info(f"⏰ Current time: {now_dt.strftime('%Y-%m-%d %H:%M UTC')}")
-    logger.info(f"⏰ Cut-off time: {six_hours_from_now.strftime('%Y-%m-%d %H:%M UTC')}")
+    logger.info(f"⏰ Cut-off time: {cutoff_time.strftime('%Y-%m-%d %H:%M UTC')}")
     
     filtered_count = 0
     for market in markets:
@@ -196,9 +201,9 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
                 hours_until = time_until / 3600
                 
                 # ONLY include if:
-                # 1. Event is within next 6 hours, OR
+                # 1. Event is within the time window, OR
                 # 2. Event already started (negative time) but market still open (LIVE)
-                if hours_until <= 6:  # This includes negative values (already started)
+                if hours_until <= time_window_hours:  # This includes negative values (already started)
                     market['_time_to_end'] = time_until
                     market['_priority'] = 1
                     urgent_markets.append(market)
@@ -221,8 +226,8 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
     urgent_markets.sort(key=lambda m: m.get('_time_to_end', float('inf')))
     
     logger.info("=" * 80)
-    logger.info(f"✅ Found {len(urgent_markets)} URGENT markets (next 6h or live)")
-    logger.info(f"❌ Filtered out {filtered_count} non-urgent markets")
+    logger.info(f"✅ Found {len(urgent_markets)} markets in {time_window_hours}h window")
+    logger.info(f"❌ Filtered out {filtered_count} markets outside window")
     logger.info("=" * 80)
     
     prioritized_markets = urgent_markets
@@ -292,7 +297,7 @@ def run_analysis(max_suggestions: int = 5, min_price: float = 0.80, max_price: f
     logger.info("=" * 80)
     logger.info("ANALYSIS SUMMARY:")
     logger.info(f"  Total markets fetched: {len(markets)}")
-    logger.info(f"  🔥 Urgent markets (≤6h): {len(prioritized_markets)}")
+    logger.info(f"  🔥 Markets in {time_window_hours}h window: {len(prioritized_markets)}")
     logger.info(f"  Markets processed: {min(completed, len(prioritized_markets))}/{len(prioritized_markets)}")
     logger.info(f"  ✅ SUGGESTIONS CREATED: {len(suggestions)}")
     logger.info(f"  Processing method: Parallel (10 threads)")
