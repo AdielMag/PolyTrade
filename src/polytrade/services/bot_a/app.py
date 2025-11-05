@@ -703,39 +703,132 @@ async def on_cancel(callback: types.CallbackQuery) -> None:
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("confirm:"))
 async def on_confirm(callback: types.CallbackQuery) -> None:
+    """Handle trade confirmation with comprehensive error handling."""
+    loading_msg_sent = False
+    
     try:
+        # Validate callback data
         if not callback.data:
             await callback.answer("❌ Invalid confirmation data", show_alert=True)
+            logger.error("Confirm callback received with no data")
             return
             
         parts = callback.data.split(":")
         if len(parts) < 3:
-            await callback.answer("❌ Invalid confirmation data", show_alert=True)
+            await callback.answer("❌ Invalid confirmation format", show_alert=True)
+            logger.error(f"Invalid confirm format: {callback.data}")
             return
+        
+        # Parse parameters
+        try:
+            suggestion_id = parts[1]
+            size = float(parts[2])
             
-        suggestion_id = parts[1]
-        size = float(parts[2])
-        
-        # Fetch suggestion from Firestore to get all details
-        db = get_client()
-        suggestion_doc = db.collection("suggestions").document(suggestion_id).get()
-        
-        if not suggestion_doc.exists:
-            await callback.answer("❌ Suggestion not found or expired", show_alert=True)
+            if size <= 0:
+                raise ValueError("Size must be positive")
+                
+        except (ValueError, IndexError) as e:
+            await callback.answer("❌ Invalid trade size", show_alert=True)
+            logger.error(f"Error parsing trade parameters: {e}")
             return
         
-        suggestion = suggestion_doc.to_dict()
+        # Show loading message
+        try:
+            await callback.answer("⏳ Processing...")
+            await callback.message.edit_text(
+                "⏳ <b>Processing Trade...</b>\n\n"
+                "🔄 Connecting to Polymarket\n"
+                "📊 Validating order details\n"
+                "💰 Preparing transaction\n\n"
+                "<i>Please wait...</i>",
+                parse_mode="HTML"
+            )
+            loading_msg_sent = True
+        except Exception as e:
+            logger.error(f"Error showing loading message: {e}")
+            # Continue anyway
+        
+        # Fetch suggestion from Firestore
+        try:
+            db = get_client()
+            suggestion_doc = db.collection("suggestions").document(suggestion_id).get()
+            
+            if not suggestion_doc.exists:
+                error_msg = (
+                    "❌ <b>Suggestion Not Found</b>\n\n"
+                    "This trade suggestion has expired or been removed.\n\n"
+                    "💡 Use /suggest to get fresh opportunities!"
+                )
+                if loading_msg_sent:
+                    await callback.message.edit_text(error_msg, parse_mode="HTML")
+                else:
+                    await callback.message.answer(error_msg, parse_mode="HTML")
+                return
+                
+            suggestion = suggestion_doc.to_dict()
+            
+        except Exception as e:
+            logger.error(f"Error fetching suggestion from Firestore: {e}")
+            error_msg = (
+                "❌ <b>Database Error</b>\n\n"
+                f"Could not retrieve trade details.\n\n"
+                f"<code>{str(e)}</code>\n\n"
+                "💡 Try again in a few moments."
+            )
+            if loading_msg_sent:
+                await callback.message.edit_text(error_msg, parse_mode="HTML")
+            else:
+                await callback.message.answer(error_msg, parse_mode="HTML")
+            return
+        
+        # Validate suggestion data
         token_id = suggestion.get("tokenId", "")
         side = suggestion.get("side", "BUY_YES")
         price = suggestion.get("price", 0.5)
         
-        # Loading indicator
-        await callback.answer("⏳ Placing order...")
+        if not token_id:
+            error_msg = (
+                "❌ <b>Invalid Suggestion Data</b>\n\n"
+                "Missing token ID. This suggestion may be corrupted.\n\n"
+                "💡 Use /suggest to get new opportunities."
+            )
+            if loading_msg_sent:
+                await callback.message.edit_text(error_msg, parse_mode="HTML")
+            else:
+                await callback.message.answer(error_msg, parse_mode="HTML")
+            return
         
         # Place the trade
-        user_chat_id = callback.from_user.id
-        result = place_trade(suggestion_id, token_id, side, price, size, user_chat_id)
+        try:
+            user_chat_id = callback.from_user.id
+            logger.info(f"Placing trade: suggestion={suggestion_id}, size={size}, user={user_chat_id}")
+            
+            result = place_trade(suggestion_id, token_id, side, price, size, user_chat_id)
+            
+            logger.info(f"Trade result: {result}")
+            
+        except Exception as e:
+            logger.error(f"Error in place_trade: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            error_msg = (
+                f"❌ <b>Trade Execution Error</b>\n\n"
+                f"<code>{str(e)}</code>\n\n"
+                f"💡 <b>Possible causes:</b>\n"
+                f"• Wallet not configured\n"
+                f"• Insufficient balance\n"
+                f"• Market closed/paused\n"
+                f"• Network connectivity issue\n\n"
+                f"📧 Contact support if this persists."
+            )
+            if loading_msg_sent:
+                await callback.message.edit_text(error_msg, parse_mode="HTML")
+            else:
+                await callback.message.answer(error_msg, parse_mode="HTML")
+            return
         
+        # Handle trade result
         if result.get("status") == "OPEN":
             side_emoji = "📈" if side.upper().startswith("BUY") else "📉"
             success_msg = (
@@ -748,27 +841,61 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
                 f"🆔 Trade ID: <code>{result.get('trade_id', 'N/A')}</code>\n\n"
                 f"✨ Your order is now live on Polymarket!"
             )
-            await callback.message.edit_text(success_msg, parse_mode="HTML")  # type: ignore
-        else:
-            await callback.message.edit_text(  # type: ignore
+            await callback.message.edit_text(success_msg, parse_mode="HTML")
+            
+        elif result.get("status") == "FAILED":
+            error_detail = result.get("error", "Unknown error")
+            fail_msg = (
                 f"❌ <b>Trade Failed</b>\n\n"
-                f"Status: {result.get('status', 'UNKNOWN')}\n\n"
-                f"Please try again or contact support.",
-                parse_mode="HTML"
+                f"<code>{error_detail}</code>\n\n"
+                f"💡 <b>What to check:</b>\n"
+                f"• Wallet balance\n"
+                f"• Market still open\n"
+                f"• Price hasn't changed drastically\n\n"
+                f"Try /suggest for new opportunities."
             )
-    except ValueError:
-        await callback.answer("⚠️ Invalid price or size format", show_alert=True)
+            await callback.message.edit_text(fail_msg, parse_mode="HTML")
+            
+        else:
+            # Unknown status
+            status = result.get('status', 'UNKNOWN')
+            unknown_msg = (
+                f"⚠️ <b>Unknown Trade Status</b>\n\n"
+                f"Status: <code>{status}</code>\n\n"
+                f"The trade may or may not have executed.\n"
+                f"Please check your /balance to verify.\n\n"
+                f"📧 Contact support with this info."
+            )
+            await callback.message.edit_text(unknown_msg, parse_mode="HTML")
+            
     except Exception as e:
-        await callback.message.edit_text(  # type: ignore
-            f"❌ <b>Error Placing Trade</b>\n\n"
-            f"<code>{str(e)}</code>\n\n"
-            f"💡 <b>Troubleshooting:</b>\n"
-            f"• Check your wallet credentials\n"
-            f"• Ensure sufficient balance\n"
-            f"• Try again in a few moments\n\n"
-            f"📧 Contact support if the issue persists.",
-            parse_mode="HTML"
-        )
+        # Catch-all for any unexpected errors
+        logger.error(f"Unexpected error in on_confirm: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        try:
+            error_msg = (
+                f"❌ <b>Unexpected Error</b>\n\n"
+                f"<code>{str(e)[:200]}</code>\n\n"
+                f"💡 <b>Troubleshooting:</b>\n"
+                f"• Try /balance to check your account\n"
+                f"• Use /suggest for new opportunities\n"
+                f"• Wait a moment and try again\n\n"
+                f"📧 Contact support if this persists."
+            )
+            
+            if loading_msg_sent:
+                await callback.message.edit_text(error_msg, parse_mode="HTML")
+            else:
+                await callback.message.answer(error_msg, parse_mode="HTML")
+        except Exception as nested_e:
+            logger.error(f"Error sending error message: {nested_e}")
+            # Last resort - try simple callback answer
+            try:
+                await callback.answer(f"❌ Error: {str(e)[:100]}", show_alert=True)
+            except Exception:
+                pass
 
 
 @dp.message()
