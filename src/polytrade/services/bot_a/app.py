@@ -932,7 +932,42 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
             user_chat_id = callback.from_user.id
             logger.info(f"Placing trade: suggestion={suggestion_id}, size={size}, user={user_chat_id}")
             
-            result = place_trade(suggestion_id, token_id, side, price, size, user_chat_id)
+            # Import PolyApiException for Cloudflare error handling
+            try:
+                from py_clob_client.exceptions import PolyApiException
+            except ImportError:
+                PolyApiException = Exception  # Fallback if import fails
+            
+            try:
+                result = place_trade(suggestion_id, token_id, side, price, size, user_chat_id)
+            except PolyApiException as poly_error:
+                # Handle Cloudflare blocks and API errors
+                error_msg_str = str(poly_error)
+                logger.error(f"PolyApiException caught: {error_msg_str[:500]}")
+                
+                # Check if it's a Cloudflare block
+                if "cloudflare" in error_msg_str.lower() or "403" in error_msg_str or "attention required" in error_msg_str.lower():
+                    error_msg = (
+                        "⛔ <b>Request Blocked by Cloudflare</b>\n\n"
+                        "Polymarket's security system blocked this trade.\n\n"
+                        "💡 <b>What this means:</b>\n"
+                        "• Automated trading detected\n"
+                        "• Too many requests in short time\n"
+                        "• IP address flagged\n\n"
+                        "🔄 <b>What to try:</b>\n"
+                        "• Wait 5-10 minutes and try again\n"
+                        "• Use /balance to check connection\n"
+                        "• Contact admin if this persists\n\n"
+                        "📝 <b>Alternative:</b> Trade manually on polymarket.com"
+                    )
+                    if loading_msg_sent:
+                        await callback.message.edit_text(error_msg, parse_mode="HTML")
+                    else:
+                        await callback.message.answer(error_msg, parse_mode="HTML")
+                    return
+                else:
+                    # Other API error - re-raise to be caught by outer handler
+                    raise
             
             logger.info(f"Trade result: {result}")
             
