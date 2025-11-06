@@ -25,12 +25,23 @@ class PolymarketClient:
         if require_auth:
             if not settings.wallet_private_key:
                 raise RuntimeError("WALLET_PRIVATE_KEY is required")
+            
+            # Add browser-like headers to reduce Cloudflare detection
+            # Based on: https://github.com/Polymarket/py-clob-client/issues/91
+            import httpx
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            
             self.client = ClobClient(
                 settings.clob_host,
                 key=settings.wallet_private_key,
                 chain_id=settings.chain_id,
                 signature_type=settings.signature_type,
                 funder=settings.proxy_address,
+                headers=headers,  # Add custom headers to bypass Cloudflare
             )
             # derive and set API creds
             self.client.set_api_creds(self.client.create_or_derive_api_creds())
@@ -533,12 +544,32 @@ class PolymarketClient:
             # Return zero values so market gets filtered out
             return {"best_bid": 0.0, "best_ask": 0.0, "ts": int(time.time())}
 
-    def place_order(self, token_id: str, side: str, price: float, size: float) -> dict[str, Any]:
+    def place_order(self, token_id: str, side: str, price: float, size: float, neg_risk: bool = False) -> dict[str, Any]:
+        """Place a limit order on Polymarket.
+        
+        Args:
+            token_id: Token ID for the outcome
+            side: "BUY_YES", "BUY_NO", "SELL_YES", or "SELL_NO"
+            price: Limit price (0.0 to 1.0)
+            size: Number of contracts
+            neg_risk: Set to True for NegRisk markets (markets with >2 outcomes)
+                     See: https://docs.polymarket.com/quickstart/orders/first-order
+        """
         if not self.client:
             raise RuntimeError("Authenticated client required for place_order()")
             
         side_const = BUY if side.upper().startswith("BUY") else SELL
-        order_args = OrderArgs(price=price, size=size, side=side_const, token_id=token_id)
+        
+        # NegRisk flag required for markets with multiple outcomes (>2)
+        # According to docs: https://docs.polymarket.com/quickstart/orders/first-order
+        order_args = OrderArgs(
+            price=price, 
+            size=size, 
+            side=side_const, 
+            token_id=token_id,
+            neg_risk=neg_risk  # Required for multi-outcome markets
+        )
+        
         signed = self.client.create_order(order_args)
         resp = self.client.post_order(signed, OrderType.GTC)
         logger.info(f"order response: {resp}")

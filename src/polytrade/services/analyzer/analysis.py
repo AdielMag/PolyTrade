@@ -116,6 +116,10 @@ def _analyze_single_market(
         end_date = market.get("gameStartTime") or market.get("eventStartTime") or market.get("endDate")
         priority = market.get("_priority", 3)
         
+        # Check if this is a NegRisk market (multi-outcome market)
+        # According to: https://docs.polymarket.com/quickstart/orders/first-order
+        neg_risk = market.get("negRisk", False) or market.get("negRiskMarketID") is not None
+        
         suggestion = {
             "tokenId": token_id,
             "marketId": condition_id,
@@ -130,6 +134,7 @@ def _analyze_single_market(
             "noProbability": no_probability,
             "endDate": end_date,  # When the event finishes
             "priority": priority,  # 1=ending in 24h, 2=later, 3=no date
+            "negRisk": neg_risk,  # True for multi-outcome markets
             "expiresAt": now + 3600,
             "status": "OPEN",
             "createdAt": now,

@@ -939,7 +939,13 @@ async def on_confirm(callback: types.CallbackQuery) -> None:
                 PolyApiException = Exception  # Fallback if import fails
             
             try:
-                result = place_trade(suggestion_id, token_id, side, price, size, user_chat_id)
+                # Check if this is a NegRisk market (multi-outcome market)
+                # NegRisk markets have the 'negRisk' field set to True
+                neg_risk = suggestion.get("negRisk", False)
+                if neg_risk:
+                    logger.info("⚠️ NegRisk market detected - setting neg_risk=True")
+                
+                result = place_trade(suggestion_id, token_id, side, price, size, user_chat_id, neg_risk)
             except PolyApiException as poly_error:
                 # Handle Cloudflare blocks and API errors
                 error_msg_str = str(poly_error)
