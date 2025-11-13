@@ -12,6 +12,7 @@ jobs:
       deploy_bot_b: ${{ steps.changes.outputs.deploy_bot_b }}
       deploy_analyzer: ${{ steps.changes.outputs.deploy_analyzer }}
       deploy_monitor: ${{ steps.changes.outputs.deploy_monitor }}
+      deploy_live_sports: ${{ steps.changes.outputs.deploy_live_sports }}
       needs_deployment: ${{ steps.changes.outputs.needs_deployment }}
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +29,7 @@ jobs:
           DEPLOY_BOT_B=false
           DEPLOY_ANALYZER=false
           DEPLOY_MONITOR=false
+          DEPLOY_LIVE_SPORTS=false
           DEPLOY_ALL=false
           
           # Check if we have a previous commit to compare to
@@ -65,6 +67,7 @@ jobs:
             DEPLOY_BOT_B=true
             DEPLOY_ANALYZER=true
             DEPLOY_MONITOR=true
+            DEPLOY_LIVE_SPORTS=true
           else
             # Individual directory checks - proceed normally
             
@@ -75,6 +78,7 @@ jobs:
               DEPLOY_BOT_B=true
               DEPLOY_ANALYZER=true
               DEPLOY_MONITOR=true
+              DEPLOY_LIVE_SPORTS=true
             fi
             
             # Check service-specific changes
@@ -100,6 +104,11 @@ jobs:
               DEPLOY_MONITOR=true
             fi
             
+            if echo "$CHANGED_FILES" | grep -q "^src/polytrade/services/live_sports_analyzer/"; then
+              echo "✅ Live Sports Analyzer code changed"
+              DEPLOY_LIVE_SPORTS=true
+            fi
+            
             # Check if Dockerfile or dependencies changed -> deploy all
             if echo "$CHANGED_FILES" | grep -qE "^(Dockerfile|pyproject.toml|poetry.lock|requirements.txt)"; then
               echo "✅ Docker or dependencies changed - deploying all services"
@@ -107,6 +116,7 @@ jobs:
               DEPLOY_BOT_B=true
               DEPLOY_ANALYZER=true
               DEPLOY_MONITOR=true
+              DEPLOY_LIVE_SPORTS=true
             fi
             
             # Check if workflow file itself changed -> deploy all
@@ -116,6 +126,7 @@ jobs:
               DEPLOY_BOT_B=true
               DEPLOY_ANALYZER=true
               DEPLOY_MONITOR=true
+              DEPLOY_LIVE_SPORTS=true
             fi
           fi
           
@@ -124,9 +135,10 @@ jobs:
           echo "deploy_bot_b=$DEPLOY_BOT_B" >> $GITHUB_OUTPUT
           echo "deploy_analyzer=$DEPLOY_ANALYZER" >> $GITHUB_OUTPUT
           echo "deploy_monitor=$DEPLOY_MONITOR" >> $GITHUB_OUTPUT
+          echo "deploy_live_sports=$DEPLOY_LIVE_SPORTS" >> $GITHUB_OUTPUT
           
           # Check if any service needs deployment
-          if [ "$DEPLOY_BOT_A" = "true" ] || [ "$DEPLOY_BOT_B" = "true" ] || [ "$DEPLOY_ANALYZER" = "true" ] || [ "$DEPLOY_MONITOR" = "true" ]; then
+          if [ "$DEPLOY_BOT_A" = "true" ] || [ "$DEPLOY_BOT_B" = "true" ] || [ "$DEPLOY_ANALYZER" = "true" ] || [ "$DEPLOY_MONITOR" = "true" ] || [ "$DEPLOY_LIVE_SPORTS" = "true" ]; then
             echo "needs_deployment=true" >> $GITHUB_OUTPUT
             echo ""
             echo "📦 Services to deploy:"
@@ -134,6 +146,7 @@ jobs:
             [ "$DEPLOY_BOT_B" = "true" ] && echo "  ✓ Bot B"
             [ "$DEPLOY_ANALYZER" = "true" ] && echo "  ✓ Analyzer"
             [ "$DEPLOY_MONITOR" = "true" ] && echo "  ✓ Monitor"
+            [ "$DEPLOY_LIVE_SPORTS" = "true" ] && echo "  ✓ Live Sports Analyzer"
           else
             echo "needs_deployment=false" >> $GITHUB_OUTPUT
             echo "⏭️  No services need deployment"
@@ -380,3 +393,47 @@ jobs:
             --update-env-vars APP_MODULE=polytrade.services.monitor.app:app,GCP_PROJECT_ID=$PROJECT_ID,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=0xc20B377471Ac4d42921F76bA0Fb7cC6aCd1dBA2f,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,EDGE_BPS=$EDGE_BPS,MIN_LIQUIDITY_USD=$MIN_LIQUIDITY_USD,DEFAULT_SL_PCT=$DEFAULT_SL_PCT,DEFAULT_TP_PCT=$DEFAULT_TP_PCT \
             --set-secrets WALLET_PRIVATE_KEY=WALLET_PRIVATE_KEY:latest
           echo "✅ Monitor deployed successfully"
+
+  deploy-live-sports:
+    name: Deploy Live Sports Analyzer
+    needs: [detect-changes, build-image]
+    if: needs.detect-changes.outputs.deploy_live_sports == 'true' && needs.build-image.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ secrets.GCP_REGION }}
+      REPO: ${{ secrets.GAR_REPOSITORY }}
+      IMAGE: ${{ secrets.IMAGE_NAME }}
+      CLOB_HOST: ${{ vars.CLOB_HOST || 'https://clob.polymarket.com' }}
+      POLYMARKET_PROXY_ADDRESS: ${{ vars.POLYMARKET_PROXY_ADDRESS }}
+      SIGNATURE_TYPE: ${{ vars.SIGNATURE_TYPE || '1' }}
+      CHAIN_ID: ${{ vars.CHAIN_ID || '137' }}
+      BOT_B_DEFAULT_CHAT_ID: ${{ vars.BOT_B_DEFAULT_CHAT_ID }}
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.CLOUD_RUN_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          # Reconstruct image URI using same logic as build job
+          REPO_LC="${REPO,,}"
+          IMAGE_LC="${IMAGE,,}"
+          IMAGE_URI="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO_LC/$IMAGE_LC:${{ github.sha }}"
+          
+          echo "🚀 Deploying Live Sports Analyzer to Cloud Run..."
+          echo "📦 Using image: $IMAGE_URI"
+          
+          gcloud run deploy polytrade-live-sports \
+            --project $PROJECT_ID --region $REGION \
+            --image "$IMAGE_URI" \
+            --platform managed \
+            --allow-unauthenticated \
+            --update-env-vars APP_MODULE=polytrade.services.live_sports_analyzer.app:app,GCP_PROJECT_ID=$PROJECT_ID,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=0xc20B377471Ac4d42921F76bA0Fb7cC6aCd1dBA2f,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,BOT_B_DEFAULT_CHAT_ID=$BOT_B_DEFAULT_CHAT_ID \
+            --set-secrets TELEGRAM_BOT_B_TOKEN=TELEGRAM_BOT_B_TOKEN:latest
+          echo "✅ Live Sports Analyzer deployed successfully"

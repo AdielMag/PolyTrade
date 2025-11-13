@@ -497,11 +497,63 @@ class PolymarketClient:
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return []
 
+    def get_price(self, token_id: str, side: str = "BUY", retry_count: int = 0) -> float:
+        """Get current market price using Polymarket's /price endpoint.
+        
+        This endpoint provides the most accurate current price for a token.
+        
+        Args:
+            token_id: Token ID
+            side: "BUY" or "SELL" - price to buy or sell
+            retry_count: Internal retry counter
+            
+        Returns:
+            Current price as float (0.0 to 1.0), or 0.0 if error
+        """
+        try:
+            import httpx
+            url = f"https://clob.polymarket.com/price"
+            params = {
+                "token_id": token_id,
+                "side": side.upper()
+            }
+            response = httpx.get(url, params=params, timeout=10.0)
+            response.raise_for_status()
+            data = response.json()
+            
+            # The response might be a number or a dict with price field
+            if isinstance(data, dict):
+                price = float(data.get("price", data.get("BUY", data.get("SELL", 0))))
+            else:
+                price = float(data)
+            
+            # Convert from cents to decimal if needed (if price > 1, it's in cents)
+            if price > 1.0:
+                price = price / 100.0
+            
+            return price
+            
+        except Exception as e:
+            error_str = str(e)
+            
+            # Retry on rate limit (429) up to 2 times with exponential backoff
+            if "429" in error_str and retry_count < 2:
+                wait_time = (retry_count + 1) * 0.5
+                time.sleep(wait_time)
+                return self.get_price(token_id, side, retry_count + 1)
+            
+            if "429" not in error_str:
+                logger.debug(f"Failed to get price for token {token_id}: {e}")
+            
+            return 0.0
+
     def get_quotes(self, token_id: str, retry_count: int = 0) -> dict[str, Any]:
         """Get current best bid/ask prices from CLOB order book.
         
         Fetches publicly available order book data - no authentication required.
         Includes retry logic for rate limiting (429 errors).
+        
+        Also tries to get current price from /price endpoint for more accuracy.
         """
         try:
             if self.client:
@@ -521,6 +573,17 @@ class PolymarketClient:
             
             best_bid = float(bids[0]["price"]) if bids else 0.0
             best_ask = float(asks[0]["price"]) if asks else 0.0
+            
+            # Try to get current price from /price endpoint for more accuracy
+            # This gives us the actual current market price, not just order book
+            current_buy_price = self.get_price(token_id, "BUY")
+            current_sell_price = self.get_price(token_id, "SELL")
+            
+            # Use /price endpoint values if available and valid, otherwise use order book
+            if current_buy_price > 0:
+                best_ask = current_buy_price  # BUY price = what you pay = ask
+            if current_sell_price > 0:
+                best_bid = current_sell_price  # SELL price = what you get = bid
             
             return {
                 "best_bid": best_bid,
