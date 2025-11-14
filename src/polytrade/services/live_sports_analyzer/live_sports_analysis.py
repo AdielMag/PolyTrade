@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -606,7 +607,7 @@ def buy_market_outcomes(
         logger.info(f"⏭️  Skipping {market_title[:60]}... - already have position")
         _send_trading_notification_sync(
             f"⏭️ <b>Skipped Market</b>\n\n"
-            f"📊 {market_title[:100]}\n\n"
+            f"📊 {html.escape(market_title[:100])}\n\n"
             f"Reason: Already have position in this market"
         )
         return trading_results
@@ -659,8 +660,8 @@ def buy_market_outcomes(
             logger.warning(f"❌ Insufficient balance: need ${cost:.4f}, have ${available_usd:.2f}")
             _send_trading_notification_sync(
                 f"❌ <b>Buy Failed</b>\n\n"
-                f"📊 {market_title[:100]}\n"
-                f"🎯 Outcome: {outcome_name}\n"
+                f"📊 {html.escape(market_title[:100])}\n"
+                f"🎯 Outcome: {html.escape(outcome_name)}\n"
                 f"💰 Cost: ${cost:.4f}\n\n"
                 f"Reason: Insufficient balance (have ${available_usd:.2f})"
             )
@@ -697,8 +698,8 @@ def buy_market_outcomes(
         # Send notification before buy attempt
         _send_trading_notification_sync(
             f"🛒 <b>Attempting Buy</b>\n\n"
-            f"📊 {market_title[:100]}\n"
-            f"🎯 Outcome: {outcome_name}\n"
+            f"📊 {html.escape(market_title[:100])}\n"
+            f"🎯 Outcome: {html.escape(outcome_name)}\n"
             f"💰 Price: ${ask_price:.4f} ({ask_price*100:.2f}%)\n"
             f"💵 Cost: ${cost:.4f}\n"
             f"💳 Balance: ${available_usd:.2f}"
@@ -777,10 +778,10 @@ def buy_market_outcomes(
                 # Send success notification
                 _send_trading_notification_sync(
                     f"✅ <b>Buy Successful</b>\n\n"
-                    f"📊 {market_title[:100]}\n"
-                    f"🎯 Outcome: {outcome_name}\n"
+                    f"📊 {html.escape(market_title[:100])}\n"
+                    f"🎯 Outcome: {html.escape(outcome_name)}\n"
                     f"💰 Cost: ${cost:.4f}\n"
-                    f"🆔 Order ID: {order_id}\n"
+                    f"🆔 Order ID: {html.escape(str(order_id))}\n"
                     f"💳 Remaining: ${balance['available_usd']:.2f}"
                 )
                 
@@ -815,9 +816,9 @@ def buy_market_outcomes(
                 
                 _send_trading_notification_sync(
                     f"❌ <b>Buy Failed</b>\n\n"
-                    f"📊 {market_title[:100]}\n"
-                    f"🎯 Outcome: {outcome_name}\n\n"
-                    f"Reason: {detailed_reason}"
+                    f"📊 {html.escape(market_title[:100])}\n"
+                    f"🎯 Outcome: {html.escape(outcome_name)}\n\n"
+                    f"Reason: {html.escape(detailed_reason)}"
                 )
                 trading_results.append({
                     "market": market_title,
@@ -839,9 +840,9 @@ def buy_market_outcomes(
             
             _send_trading_notification_sync(
                 f"❌ <b>Buy Failed</b>\n\n"
-                f"📊 {market_title[:100]}\n"
-                f"🎯 Outcome: {outcome_name}\n\n"
-                f"Reason: {reason}"
+                f"📊 {html.escape(market_title[:100])}\n"
+                f"🎯 Outcome: {html.escape(outcome_name)}\n\n"
+                f"Reason: {html.escape(reason)}"
             )
             
             trading_results.append({
@@ -916,11 +917,14 @@ def format_markets_notification(
         volume = market.get("volume", 0)
         outcomes_info = market.get("outcomes_info", [])
         
-        message_parts.append(f"<b>{i}. {title}</b>\n")
+        # Escape HTML entities in title and outcome names to prevent Telegram parsing errors
+        escaped_title = html.escape(title)
+        message_parts.append(f"<b>{i}. {escaped_title}</b>\n")
         
         if outcomes_info:
             for outcome_name, prob, price in outcomes_info:
-                message_parts.append(f"   • {outcome_name}: <b>{prob:.2f}%</b> (${price:.4f})\n")
+                escaped_outcome = html.escape(outcome_name)
+                message_parts.append(f"   • {escaped_outcome}: <b>{prob:.2f}%</b> (${price:.4f})\n")
         
         message_parts.append(f"   💧 Liquidity: ${liquidity:,.2f}\n")
         message_parts.append(f"   📈 Volume: ${volume:,.2f}\n\n")
