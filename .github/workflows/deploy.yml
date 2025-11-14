@@ -435,5 +435,5 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --update-env-vars APP_MODULE=polytrade.services.live_sports_analyzer.app:app,GCP_PROJECT_ID=$PROJECT_ID,CLOB_HOST=$CLOB_HOST,POLYMARKET_PROXY_ADDRESS=0xc20B377471Ac4d42921F76bA0Fb7cC6aCd1dBA2f,SIGNATURE_TYPE=$SIGNATURE_TYPE,CHAIN_ID=$CHAIN_ID,BOT_B_DEFAULT_CHAT_ID=$BOT_B_DEFAULT_CHAT_ID \
-            --set-secrets TELEGRAM_BOT_B_TOKEN=TELEGRAM_BOT_B_TOKEN:latest
+            --set-secrets WALLET_PRIVATE_KEY=WALLET_PRIVATE_KEY:latest,TELEGRAM_BOT_B_TOKEN=TELEGRAM_BOT_B_TOKEN:latest
           echo "✅ Live Sports Analyzer deployed successfully"
