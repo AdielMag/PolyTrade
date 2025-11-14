@@ -18,7 +18,8 @@ def run(
     lookback_hours: float = Body(default=4.0, embed=True),
     min_liquidity: float = Body(default=500.0, embed=True),
     min_ask_price: float = Body(default=0.93, embed=True),
-    max_ask_price: float = Body(default=0.96, embed=True)
+    max_ask_price: float = Body(default=0.96, embed=True),
+    skip_trading: bool = Body(default=False, embed=True)
 ) -> dict[str, Any]:
     """Run the live sports market analysis.
     
@@ -28,20 +29,23 @@ def run(
         min_liquidity: Minimum liquidity in USD (default: 500.0)
         min_ask_price: Minimum ask price 0-1 (default: 0.93 for 93%)
         max_ask_price: Maximum ask price 0-1 (default: 0.96 for 96%)
+        skip_trading: If True, only finds markets without executing trades (default: False)
     
     Returns:
         Dictionary with count of filtered markets found
     """
     logger.info("Received POST /run request - starting live sports analysis")
     logger.info(f"Parameters: max_workers={max_workers}, lookback_hours={lookback_hours}, "
-                f"min_liquidity={min_liquidity}, min_ask_price={min_ask_price}, max_ask_price={max_ask_price}")
+                f"min_liquidity={min_liquidity}, min_ask_price={min_ask_price}, max_ask_price={max_ask_price}, "
+                f"skip_trading={skip_trading}")
     
     filtered_markets = run_live_sports_analysis(
         max_workers=max_workers,
         lookback_hours=lookback_hours,
         min_liquidity=min_liquidity,
         min_ask_price=min_ask_price,
-        max_ask_price=max_ask_price
+        max_ask_price=max_ask_price,
+        skip_trading=skip_trading
     )
     logger.info(f"Analysis complete - found {len(filtered_markets)} filtered markets")
     return {
@@ -51,7 +55,8 @@ def run(
             "lookback_hours": lookback_hours,
             "min_liquidity": min_liquidity,
             "min_ask_price": min_ask_price,
-            "max_ask_price": max_ask_price
+            "max_ask_price": max_ask_price,
+            "skip_trading": skip_trading
         }
     }
 

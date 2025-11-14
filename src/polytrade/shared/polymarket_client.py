@@ -3,9 +3,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import httpx
 from loguru import logger
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import AssetType, BalanceAllowanceParams, OrderArgs, OrderType
+from py_clob_client.clob_types import AssetType, BalanceAllowanceParams, OrderArgs, OrderType, PartialCreateOrderOptions
 from py_clob_client.order_builder.constants import BUY, SELL
 
 from .config import settings
@@ -19,32 +20,94 @@ class PolymarketClient:
             require_auth: If True, requires wallet credentials for authenticated operations.
                          If False, only read-only public operations are available.
         """
+        import httpx
+        
         self.client = None
         self.require_auth = require_auth
+        
+        # Create shared HTTP client with connection pooling to avoid socket exhaustion
+        # Reduced limits to prevent Windows socket exhaustion
+        # httpx.Client is thread-safe and supports concurrent requests
+        self.http_client = httpx.Client(
+            limits=httpx.Limits(
+                max_connections=50,  # Reduced to prevent socket exhaustion
+                max_keepalive_connections=10  # Keep fewer connections alive
+            ),
+            timeout=30.0,
+            follow_redirects=True
+        )
         
         if require_auth:
             if not settings.wallet_private_key:
                 raise RuntimeError("WALLET_PRIVATE_KEY is required")
             
-            # Add browser-like headers to reduce Cloudflare detection
-            # Based on: https://github.com/Polymarket/py-clob-client/issues/91
-            import httpx
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json",
-                "Accept-Language": "en-US,en;q=0.9",
-            }
+            if not settings.proxy_address:
+                raise RuntimeError("POLYMARKET_PROXY_ADDRESS is required")
             
-            self.client = ClobClient(
-                settings.clob_host,
-                key=settings.wallet_private_key,
-                chain_id=settings.chain_id,
-                signature_type=settings.signature_type,
-                funder=settings.proxy_address,
-                headers=headers,  # Add custom headers to bypass Cloudflare
-            )
-            # derive and set API creds
-            self.client.set_api_creds(self.client.create_or_derive_api_creds())
+            try:
+                # Initialize ClobClient (headers parameter not supported in py-clob-client)
+                # Note: ClobClient uses requests library internally, which may create new connections
+                logger.debug("Initializing ClobClient...")
+                self.client = ClobClient(
+                    settings.clob_host,
+                    key=settings.wallet_private_key,
+                    chain_id=settings.chain_id,
+                    signature_type=settings.signature_type,
+                    funder=settings.proxy_address,
+                )
+                # derive and set API creds (this makes HTTP requests)
+                logger.debug("Deriving API credentials...")
+                self.client.set_api_creds(self.client.create_or_derive_api_creds())
+                logger.debug("ClobClient initialized successfully")
+            except Exception as e:
+                error_type = type(e).__name__
+                error_msg = str(e)
+                logger.error(f"Failed to initialize ClobClient: {error_type}: {error_msg}")
+                
+                # Provide more helpful error messages
+                if "socket" in error_msg.lower() or "10048" in error_msg or "connection" in error_msg.lower():
+                    raise RuntimeError(
+                        f"Network/socket error during ClobClient initialization: {error_msg}\n"
+                        f"This may be due to socket exhaustion from previous operations. "
+                        f"Try waiting a few seconds and retrying."
+                    ) from e
+                elif "credentials" in error_msg.lower() or "key" in error_msg.lower() or "auth" in error_msg.lower():
+                    raise RuntimeError(
+                        f"Authentication error: {error_msg}\n"
+                        f"Please verify WALLET_PRIVATE_KEY and POLYMARKET_PROXY_ADDRESS are correct."
+                    ) from e
+                else:
+                    # Re-raise with original exception
+                    raise
+    
+    def __del__(self) -> None:
+        """Cleanup: close HTTP client and connection pool when object is destroyed."""
+        if hasattr(self, 'http_client') and self.http_client:
+            try:
+                self.http_client.close()
+                # Force close the connection pool transport
+                if hasattr(self.http_client, '_transport') and self.http_client._transport:
+                    try:
+                        self.http_client._transport.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    
+    def close(self) -> None:
+        """Explicitly close the HTTP client and connection pool."""
+        if hasattr(self, 'http_client') and self.http_client:
+            try:
+                # Close the HTTP client and all its connections
+                self.http_client.close()
+                # Force close the connection pool transport
+                if hasattr(self.http_client, '_transport') and self.http_client._transport:
+                    try:
+                        self.http_client._transport.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
     def get_balance(self) -> dict[str, float]:
         """Get current USDC balance and portfolio value from Polymarket CLOB."""
@@ -134,7 +197,6 @@ class PolymarketClient:
                 logger.info("FETCHING POSITIONS FROM DATA API...")
                 logger.info("ℹ️  py-clob-client has no get_positions() - using Data API directly")
                 
-                import httpx
                 import json
                 
                 # Get wallet address from the client
@@ -174,7 +236,7 @@ class PolymarketClient:
                 logger.info(f"ℹ️  Using sizeThreshold=0 to include all positions (default is 1.0)")
                 
                 logger.info("Making HTTP GET request...")
-                pos_response = httpx.get(positions_url, timeout=30.0)
+                pos_response = self.http_client.get(positions_url, timeout=30.0)
                 logger.info(f"✅ Response status code: {pos_response.status_code}")
                 logger.info(f"Response headers: {dict(pos_response.headers)}")
                 
@@ -200,7 +262,7 @@ class PolymarketClient:
                     fallback_url = f"https://data-api.polymarket.com/positions?user={wallet_address}&sizeThreshold=0"
                     logger.info(f"📡 Fallback API URL: {fallback_url}")
                     
-                    pos_response = httpx.get(fallback_url, timeout=30.0)
+                    pos_response = self.http_client.get(fallback_url, timeout=30.0)
                     logger.info(f"✅ Fallback response status code: {pos_response.status_code}")
                     
                     response_text = pos_response.text
@@ -387,14 +449,12 @@ class PolymarketClient:
         Does NOT fetch from any external sources - Polymarket only.
         """
         try:
-            import httpx
-            
             # First, get the sports tag ID from the /sports endpoint
             logger.info("Fetching sports tag information from Polymarket...")
             sports_url = "https://gamma-api.polymarket.com/sports"
             
             try:
-                sports_response = httpx.get(sports_url, timeout=10.0)
+                sports_response = self.http_client.get(sports_url, timeout=10.0)
                 sports_response.raise_for_status()
                 sports_data = sports_response.json()
                 
@@ -424,7 +484,7 @@ class PolymarketClient:
             logger.debug(f"Request params: {params}")
             logger.info("📊 Fetching all markets, will filter for sports")
             
-            response = httpx.get(url, params=params, timeout=30.0)
+            response = self.http_client.get(url, params=params, timeout=30.0)
             response.raise_for_status()
             all_markets = response.json()
             
@@ -511,15 +571,16 @@ class PolymarketClient:
             Current price as float (0.0 to 1.0), or 0.0 if error
         """
         try:
-            import httpx
             url = f"https://clob.polymarket.com/price"
             params = {
                 "token_id": token_id,
                 "side": side.upper()
             }
-            response = httpx.get(url, params=params, timeout=10.0)
+            # Use pooled client - connection automatically returned to pool after response
+            response = self.http_client.get(url, params=params, timeout=10.0)
             response.raise_for_status()
             data = response.json()
+            # Response automatically closed when it goes out of scope, returning connection to pool
             
             # The response might be a number or a dict with price field
             if isinstance(data, dict):
@@ -561,11 +622,13 @@ class PolymarketClient:
                 book = self.client.get_order_book(token_id)
             else:
                 # Use public API for order book (no auth required)
-                import httpx
+                # Use shared HTTP client with connection pooling
                 url = f"https://clob.polymarket.com/book?token_id={token_id}"
-                response = httpx.get(url, timeout=10.0)
+                # Use pooled client - connection automatically returned to pool after response
+                response = self.http_client.get(url, timeout=10.0)
                 response.raise_for_status()
                 book = response.json()
+                # Response automatically closed when it goes out of scope, returning connection to pool
             
             # Extract best bid and ask
             bids = book.get("bids", [])
@@ -610,6 +673,9 @@ class PolymarketClient:
     def place_order(self, token_id: str, side: str, price: float, size: float, neg_risk: bool = False) -> dict[str, Any]:
         """Place a limit order on Polymarket.
         
+        IMPORTANT: This function attempts the order ONCE only - no retries.
+        If the order fails, it returns {"ok": False, "resp": {...}} with error details.
+        
         Args:
             token_id: Token ID for the outcome
             side: "BUY_YES", "BUY_NO", "SELL_YES", or "SELL_NO"
@@ -623,20 +689,46 @@ class PolymarketClient:
             
         side_const = BUY if side.upper().startswith("BUY") else SELL
         
-        # NegRisk flag required for markets with multiple outcomes (>2)
-        # According to docs: https://docs.polymarket.com/quickstart/orders/first-order
+        # Create OrderArgs (neg_risk is NOT a parameter here)
         order_args = OrderArgs(
             price=price, 
             size=size, 
             side=side_const, 
-            token_id=token_id,
-            neg_risk=neg_risk  # Required for multi-outcome markets
+            token_id=token_id
         )
         
-        signed = self.client.create_order(order_args)
-        resp = self.client.post_order(signed, OrderType.GTC)
-        logger.info(f"order response: {resp}")
-        return {"ok": True, "resp": resp}
+        # NegRisk flag required for markets with multiple outcomes (>2)
+        # According to docs: https://docs.polymarket.com/quickstart/orders/first-order
+        # neg_risk is passed in PartialCreateOrderOptions, not OrderArgs
+        options = PartialCreateOrderOptions(neg_risk=neg_risk) if neg_risk else None
+        
+        # Single attempt only - no retries
+        try:
+            signed = self.client.create_order(order_args, options=options)
+            resp = self.client.post_order(signed, OrderType.GTC)
+            logger.info(f"order response: {resp}")
+            return {"ok": True, "resp": resp}
+        except Exception as e:
+            # Return failure immediately - no retry
+            error_msg = str(e)
+            error_type = type(e).__name__
+            
+            # Check if it's a socket exhaustion error
+            is_socket_error = (
+                "10048" in error_msg or 
+                "socket" in error_msg.lower() or 
+                "connection" in error_msg.lower() or
+                "PolyApiException" in error_type
+            )
+            
+            if is_socket_error:
+                logger.error(f"Order placement failed due to socket exhaustion: {error_type}: {error_msg}")
+                logger.error("   ClobClient uses requests library which cannot share httpx connection pool")
+                logger.error("   This may be due to too many concurrent operations")
+            else:
+                logger.error(f"Order placement failed: {error_type}: {error_msg}")
+            
+            return {"ok": False, "resp": {"error": error_msg, "error_type": error_type}}
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:
         if not self.client:

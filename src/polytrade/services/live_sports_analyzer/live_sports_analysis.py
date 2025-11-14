@@ -52,13 +52,14 @@ async def _send_notification_direct(chat_id: int, text: str) -> None:
                 pass
 
 
-def fetch_markets_page(offset: int, limit: int, sports_tag_ids: set[str]) -> list[dict[str, Any]]:
+def fetch_markets_page(offset: int, limit: int, sports_tag_ids: set[str], client: httpx.Client | None = None) -> list[dict[str, Any]]:
     """Fetch a single page of markets from Polymarket API.
     
     Args:
         offset: Pagination offset
         limit: Number of results per page
         sports_tag_ids: Set of sports tag IDs to filter by
+        client: Optional shared httpx.Client for connection pooling (if None, creates new connection)
         
     Returns:
         List of sports markets from this page
@@ -74,23 +75,69 @@ def fetch_markets_page(offset: int, limit: int, sports_tag_ids: set[str]) -> lis
         }
         
         logger.debug(f"Fetching page at offset {offset} (limit={limit})")
-        response = httpx.get(url, params=params, timeout=30.0)
+        # Always use the shared client for connection pooling
+        # Never use httpx.get() directly as it creates unpooled connections
+        if not client:
+            raise ValueError("Shared httpx.Client is required for connection pooling")
+        
+        # On Windows, add small delay between requests to prevent socket exhaustion
+        import sys
+        if sys.platform == "win32" and offset > 0:
+            time.sleep(0.1)  # 100ms delay between page fetches on Windows
+        
+        # Use the pooled client - connections are automatically returned to pool after response
+        response = client.get(url, params=params, timeout=30.0)
         response.raise_for_status()
         all_markets = response.json()
+        # Response is automatically closed when it goes out of scope, returning connection to pool
         
         if not all_markets:
             logger.debug(f"Page at offset {offset} returned 0 markets (end of results)")
             return []
         
         logger.debug(f"Page at offset {offset} returned {len(all_markets)} markets")
+
         
-        # Filter for sports markets only
+        # Filter for sports markets only - comprehensive list to catch all sports
         sports_keywords = [
-            "vs", "vs.", "football", "basketball", "baseball", "soccer", "nfl", "nba", 
-            "mlb", "nhl", "tennis", "golf", "boxing", "mma", "ufc", "cricket", 
-            "rugby", "hockey", "ncaa", "college", "spread", "o/u", "over/under",
-            "moneyline", "1h", "1st half", "playoff", "championship", "bowl",
-            "game", "match", "series", "tournament"
+            # Common sports terms
+            "vs", "vs.", "v ", "v. ", "versus",
+            # Major sports
+            "football", "basketball", "baseball", "soccer", "tennis", "golf", 
+            "cricket", "rugby", "hockey", "boxing", "mma", "ufc", "wrestling",
+            "volleyball", "badminton", "table tennis", "ping pong", "squash",
+            "swimming", "diving", "athletics", "track", "field",
+            # League abbreviations
+            "nfl", "nba", "mlb", "nhl", "mls", "epl", "premier league", "la liga",
+            "serie a", "bundesliga", "ligue 1", "champions league", "europa league",
+            "ncaa", "college", "nhl", "khl", "afl", "cfl",
+            # Betting/market terms
+            "spread", "o/u", "over/under", "over under", "total", "moneyline",
+            "ml", "point spread", "handicap", "odds", "betting",
+            # Game/match terms
+            "game", "match", "fixture", "contest", "bout", "fight", "race",
+            "series", "tournament", "championship", "cup", "bowl", "final",
+            "semifinal", "quarterfinal", "playoff", "playoff", "play-in",
+            # Time periods
+            "1h", "1st half", "first half", "2h", "2nd half", "second half",
+            "q1", "q2", "q3", "q4", "quarter", "period", "inning", "set",
+            # Sports events
+            "olympics", "world cup", "euro", "asia cup", "africa cup",
+            "champions trophy", "t20", "test", "odi", "ipl", "psl", "bbl",
+            # International/country codes (common in sports)
+            "pak", "sri", "ind", "aus", "eng", "nz", "sa", "wi", "ban", "afg",
+            "ire", "ned", "zim", "ken", "uga", "nam", "oma", "uae", "usa", "can",
+            "pakistan", "sri lanka", "india", "australia", "england", "new zealand",
+            "south africa", "west indies", "bangladesh", "afghanistan", "ireland",
+            "netherlands", "zimbabwe", "kenya", "uganda", "namibia", "oman",
+            # Additional sports
+            "f1", "formula 1", "motogp", "nascar", "racing", "auto racing",
+            "esports", "esports", "valorant", "csgo", "dota", "lol", "league of legends",
+            "darts", "snooker", "pool", "billiards", "curling", "lacrosse",
+            "water polo", "handball", "futsal", "beach volleyball",
+            # Common phrases
+            "win", "lose", "draw", "tie", "score", "points", "goals", "runs",
+            "wickets", "sets", "rounds", "innings", "periods", "quarters"
         ]
         
         markets = []
@@ -126,91 +173,150 @@ def fetch_markets_page(offset: int, limit: int, sports_tag_ids: set[str]) -> lis
 def fetch_all_sports_markets(max_workers: int = 10) -> list[dict[str, Any]]:
     """Fetch ALL sports markets from Polymarket using pagination and multithreading.
     
+    Uses a shared HTTP client with connection pooling to avoid socket exhaustion.
+    
     Args:
         max_workers: Number of concurrent threads for fetching pages
         
     Returns:
         List of all sports markets
     """
+    import sys
+    
     logger.info("=" * 80)
     logger.info("FETCHING ALL SPORTS MARKETS FROM POLYMARKET")
     logger.info("=" * 80)
     
-    # First, get sports tag IDs
-    logger.info("Fetching sports tag information...")
-    sports_tag_ids = set()
+    # On Windows, add a delay before starting to allow any previous connections to close
+    is_windows = sys.platform == "win32"
+    if is_windows:
+        logger.info("🪟 Windows detected - waiting 3s before starting to allow sockets to be released...")
+        time.sleep(3.0)
+    
+    # Create shared HTTP client with connection pooling to avoid socket exhaustion
+    # On Windows, use much more conservative limits due to socket TIME_WAIT state
+    if is_windows:
+        # Windows: Very conservative limits to prevent socket exhaustion
+        max_conn = min(max_workers, 10)  # Max 10 connections on Windows
+        keepalive = min(max_workers // 2, 5)  # Keep fewer connections alive
+        logger.info(f"🪟 Windows: Using reduced connection limits (max={max_conn}, keepalive={keepalive})")
+    else:
+        # Linux/Mac: Can use more connections
+        max_conn = max_workers * 2
+        keepalive = max_workers
+    
+    http_client = httpx.Client(
+        limits=httpx.Limits(
+            max_connections=max_conn,
+            max_keepalive_connections=keepalive
+        ),
+        timeout=30.0,
+        follow_redirects=True
+    )
+    
     try:
-        sports_url = "https://gamma-api.polymarket.com/sports"
-        sports_response = httpx.get(sports_url, timeout=10.0)
-        sports_response.raise_for_status()
-        sports_data = sports_response.json()
-        
-        if isinstance(sports_data, list):
-            for sport in sports_data:
-                if "id" in sport:
-                    sports_tag_ids.add(str(sport["id"]))
-        
-        logger.info(f"✅ Found {len(sports_tag_ids)} sports tag IDs")
-    except Exception as e:
-        logger.warning(f"Could not fetch sports tags, will filter by keywords only: {e}")
-    
-    # Strategy: Fetch first page to estimate total, then fetch all pages in parallel
-    limit = 100  # Results per page
-    
-    logger.info(f"Fetching first page to estimate total markets...")
-    first_page = fetch_markets_page(0, limit, sports_tag_ids)
-    
-    if not first_page:
-        logger.warning("First page returned 0 markets, no data to fetch")
-        return []
-    
-    logger.info(f"First page returned {len(first_page)} sports markets")
-    
-    # Estimate total pages (we'll fetch until we get empty results)
-    # Polymarket typically has 2000-5000 markets, so ~20-50 pages
-    estimated_pages = 50  # Fetch up to 50 pages (5000 markets)
-    
-    logger.info(f"Using multithreading to fetch up to {estimated_pages} pages concurrently...")
-    logger.info(f"Workers: {max_workers} | Page size: {limit}")
-    
-    all_markets = [first_page]  # Start with first page
-    
-    # Fetch remaining pages in parallel
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit page fetch tasks (start from page 1 since we have page 0)
-        future_to_page = {
-            executor.submit(fetch_markets_page, page * limit, limit, sports_tag_ids): page
-            for page in range(1, estimated_pages)
-        }
-        
-        completed = 0
-        for future in as_completed(future_to_page):
-            completed += 1
-            page_num = future_to_page[future]
+        # First, get sports tag IDs
+        logger.info("Fetching sports tag information...")
+        sports_tag_ids = set()
+        try:
+            sports_url = "https://gamma-api.polymarket.com/sports"
+            sports_response = http_client.get(sports_url, timeout=10.0)
+            sports_response.raise_for_status()
+            sports_data = sports_response.json()
             
-            if completed % 10 == 0:
-                logger.info(f"Progress: {completed}/{len(future_to_page)} pages fetched")
+            if isinstance(sports_data, list):
+                for sport in sports_data:
+                    if "id" in sport:
+                        sports_tag_ids.add(str(sport["id"]))
             
-            try:
-                page_markets = future.result()
-                if page_markets:
-                    all_markets.append(page_markets)
-                else:
-                    # Empty page means we've reached the end
-                    logger.debug(f"Page {page_num} empty, reached end of results")
-            except Exception as e:
-                logger.error(f"Error processing page {page_num}: {e}")
+            logger.info(f"✅ Found {len(sports_tag_ids)} sports tag IDs")
+        except Exception as e:
+            logger.warning(f"Could not fetch sports tags, will filter by keywords only: {e}")
+        
+        # Strategy: Fetch first page to estimate total, then fetch all pages in parallel
+        limit = 100  # Results per page
+        
+        logger.info(f"Fetching first page to estimate total markets...")
+        first_page = fetch_markets_page(0, limit, sports_tag_ids, http_client)
+        
+        if not first_page:
+            logger.warning("First page returned 0 markets, no data to fetch")
+            return []
+        
+        logger.info(f"First page returned {len(first_page)} sports markets")
+        
+        # Estimate total pages (we'll fetch until we get empty results)
+        # Polymarket typically has 2000-5000 markets, so ~20-50 pages
+        estimated_pages = 50  # Fetch up to 50 pages (5000 markets)
+        
+        logger.info(f"Using multithreading to fetch up to {estimated_pages} pages concurrently...")
+        logger.info(f"Workers: {max_workers} | Page size: {limit}")
+        
+        all_markets = [first_page]  # Start with first page
+        
+        # Fetch remaining pages in parallel
+        # Note: httpx.Client is thread-safe for concurrent requests
+        # On Windows, reduce concurrent workers to prevent socket exhaustion
+        import sys
+        is_windows = sys.platform == "win32"
+        effective_workers = min(max_workers, 5) if is_windows else max_workers
+        if is_windows and max_workers > 5:
+            logger.info(f"🪟 Windows: Reducing workers from {max_workers} to {effective_workers} to prevent socket exhaustion")
+        
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            # Submit page fetch tasks (start from page 1 since we have page 0)
+            future_to_page = {
+                executor.submit(fetch_markets_page, page * limit, limit, sports_tag_ids, http_client): page
+                for page in range(1, estimated_pages)
+            }
+            
+            completed = 0
+            for future in as_completed(future_to_page):
+                completed += 1
+                page_num = future_to_page[future]
+                
+                if completed % 10 == 0:
+                    logger.info(f"Progress: {completed}/{len(future_to_page)} pages fetched")
+                
+                try:
+                    page_markets = future.result()
+                    if page_markets:
+                        all_markets.append(page_markets)
+                    else:
+                        # Empty page means we've reached the end
+                        logger.debug(f"Page {page_num} empty, reached end of results")
+                except Exception as e:
+                    logger.error(f"Error processing page {page_num}: {e}")
+                    # On Windows, add small delay after errors to allow sockets to recover
+                    import sys
+                    if sys.platform == "win32":
+                        time.sleep(0.5)
+        
+        # Flatten the list of lists
+        flattened_markets = []
+        for page_markets in all_markets:
+            flattened_markets.extend(page_markets)
+        
+        logger.info("=" * 80)
+        logger.info(f"✅ TOTAL SPORTS MARKETS FETCHED: {len(flattened_markets)}")
+        logger.info("=" * 80)
+        
+        return flattened_markets
     
-    # Flatten the list of lists
-    flattened_markets = []
-    for page_markets in all_markets:
-        flattened_markets.extend(page_markets)
-    
-    logger.info("=" * 80)
-    logger.info(f"✅ TOTAL SPORTS MARKETS FETCHED: {len(flattened_markets)}")
-    logger.info("=" * 80)
-    
-    return flattened_markets
+    finally:
+        # Force close all connections in the pool
+        try:
+            # Close the HTTP client and all its connections
+            http_client.close()
+            # Force close the connection pool
+            if hasattr(http_client, '_transport') and http_client._transport:
+                try:
+                    http_client._transport.close()
+                except Exception:
+                    pass
+            logger.info("✅ HTTP client and connection pool closed")
+        except Exception as e:
+            logger.warning(f"⚠️  Error closing HTTP client: {e}")
 
 
 def filter_live_markets(markets: list[dict[str, Any]], lookback_hours: float = 4.0) -> list[dict[str, Any]]:
@@ -598,14 +704,21 @@ def buy_market_outcomes(
             f"💳 Balance: ${available_usd:.2f}"
         )
         
-        # Add delay to avoid rate limiting
-        delay = 1.5  # 1.5 second delay between orders
+        # Add delay to avoid rate limiting and socket exhaustion
+        # On Windows, use much longer delay because ClobClient uses requests library (not httpx)
+        # Windows sockets stay in TIME_WAIT for 30-120 seconds, so we need more time between orders
+        import sys
+        is_windows = sys.platform == "win32"
+        delay = 8.0 if is_windows else 1.5  # Much longer delay on Windows (8 seconds)
         logger.info(f"⏳ Waiting {delay}s before placing order...")
+        if is_windows:
+            logger.info("   (Windows: ClobClient uses requests library - sockets need 30-120s to fully release)")
+            logger.info("   (Using 8s delay to allow sockets to be available for ClobClient)")
         time.sleep(delay)
         
-        # Place order
+        # Place order (single attempt only - no retries)
         try:
-            logger.info(f"📤 Placing order...")
+            logger.info(f"📤 Placing order (single attempt, no retries)...")
             order_result = client.place_order(
                 token_id=token_id,
                 side=side,
@@ -680,19 +793,38 @@ def buy_market_outcomes(
                     "remaining_balance": balance["available_usd"]
                 })
             else:
-                error_msg = order_result.get("resp", {}).get("error", "Unknown error")
-                logger.error(f"❌ BUY FAILED: {error_msg}")
+                error_resp = order_result.get("resp", {})
+                error_msg = error_resp.get("error", "Unknown error")
+                error_type = error_resp.get("error_type", "Unknown")
+                
+                # Check if it's a socket exhaustion error
+                is_socket_error = (
+                    "10048" in error_msg or 
+                    "socket" in error_msg.lower() or 
+                    "connection" in error_msg.lower() or
+                    "PolyApiException" in error_type
+                )
+                
+                if is_socket_error:
+                    logger.error(f"❌ BUY FAILED (Socket Exhaustion): {error_msg}")
+                    logger.error("   ClobClient uses requests library which cannot share httpx connection pool")
+                    detailed_reason = f"Socket exhaustion - ClobClient needs available sockets\n\nError: {error_msg}"
+                else:
+                    logger.error(f"❌ BUY FAILED: {error_msg}")
+                    detailed_reason = error_msg
+                
                 _send_trading_notification_sync(
                     f"❌ <b>Buy Failed</b>\n\n"
                     f"📊 {market_title[:100]}\n"
                     f"🎯 Outcome: {outcome_name}\n\n"
-                    f"Reason: {error_msg}"
+                    f"Reason: {detailed_reason}"
                 )
                 trading_results.append({
                     "market": market_title,
                     "outcome": outcome_name,
                     "status": "FAILED",
                     "reason": error_msg,
+                    "error_type": error_type,
                     "cost": cost
                 })
         except Exception as e:
@@ -723,28 +855,57 @@ def buy_market_outcomes(
     return trading_results
 
 
-def format_markets_notification(found_markets: list[dict[str, Any]]) -> str:
+def format_markets_notification(
+    found_markets: list[dict[str, Any]], 
+    live_markets_count: int = 0,
+    min_liquidity: float = 500.0,
+    min_ask_price: float = 0.93,
+    max_ask_price: float = 0.96
+) -> str:
     """Format markets data into a Telegram notification message.
     
     Args:
-        found_markets: List of market summary dictionaries
+        found_markets: List of market summary dictionaries matching criteria
+        live_markets_count: Total number of live markets found (before filtering)
+        min_liquidity: Minimum liquidity threshold used for filtering
+        min_ask_price: Minimum ask price (0-1) used for filtering
+        max_ask_price: Maximum ask price (0-1) used for filtering
         
     Returns:
         HTML-formatted message string
     """
     if not found_markets:
-        return (
-            "🔍 <b>Live Sports Analysis</b>\n\n"
-            "No markets found matching criteria:\n"
-            "• Liquidity > $500\n"
-            "• Ask price 93-96%\n"
-            "• Live games"
-        )
+        if live_markets_count > 0:
+            return (
+                "🔍 <b>Live Sports Analysis</b>\n\n"
+                f"🔴 Found <b>{live_markets_count}</b> live markets\n"
+                f"✅ <b>0</b> matching your criteria:\n"
+                f"• Liquidity > ${min_liquidity:,.0f}\n"
+                f"• Ask price {min_ask_price*100:.0f}%-{max_ask_price*100:.0f}%\n"
+                f"• Live games"
+            )
+        else:
+            return (
+                "🔍 <b>Live Sports Analysis</b>\n\n"
+                "No live markets found matching criteria:\n"
+                f"• Liquidity > ${min_liquidity:,.0f}\n"
+                f"• Ask price {min_ask_price*100:.0f}%-{max_ask_price*100:.0f}%\n"
+                "• Live games"
+            )
     
     message_parts = [
         f"🔍 <b>Live Sports Markets Found</b>\n",
-        f"📊 Found <b>{len(found_markets)}</b> markets matching criteria\n\n"
     ]
+    
+    if live_markets_count > len(found_markets):
+        message_parts.append(
+            f"🔴 Found <b>{live_markets_count}</b> live markets\n"
+            f"✅ <b>{len(found_markets)}</b> matching your criteria\n\n"
+        )
+    else:
+        message_parts.append(
+            f"📊 Found <b>{len(found_markets)}</b> markets matching criteria\n\n"
+        )
     
     # Limit to top 10 markets to avoid message length limits
     markets_to_show = found_markets[:10]
@@ -775,7 +936,8 @@ def run_live_sports_analysis(
     lookback_hours: float = 4.0,
     min_liquidity: float = 500.0,
     min_ask_price: float = 0.93,
-    max_ask_price: float = 0.96
+    max_ask_price: float = 0.96,
+    skip_trading: bool = False
 ) -> list[dict[str, Any]]:
     """Main function to analyze live sports markets on Polymarket.
     
@@ -785,6 +947,7 @@ def run_live_sports_analysis(
     3. Filters by liquidity and ask price criteria
     4. Logs comprehensive details including pricing, liquidity, and outcomes
     5. Sends Telegram notification via bot_b
+    6. Optionally executes trades (if skip_trading=False)
     
     Args:
         max_workers: Number of concurrent threads for fetching
@@ -792,6 +955,7 @@ def run_live_sports_analysis(
         min_liquidity: Minimum liquidity in USD (default: 500.0)
         min_ask_price: Minimum ask price (0-1, default: 0.93 for 93%)
         max_ask_price: Maximum ask price (0-1, default: 0.96 for 96%)
+        skip_trading: If True, only finds markets without executing trades (default: False)
         
     Returns:
         List of filtered live sports markets with full details
@@ -804,6 +968,7 @@ def run_live_sports_analysis(
     logger.info(f"  - Lookback window: {lookback_hours}h")
     logger.info(f"  - Min liquidity: ${min_liquidity:,.2f}")
     logger.info(f"  - Ask price range: {min_ask_price*100:.0f}%-{max_ask_price*100:.0f}%")
+    logger.info(f"  - Skip trading: {skip_trading}")
     logger.info("=" * 80)
     
     # Send notification that analysis is starting (in background thread to avoid blocking)
@@ -826,22 +991,23 @@ def run_live_sports_analysis(
     
     # Step 1: Fetch all sports markets with pagination and multithreading
     all_sports_markets = fetch_all_sports_markets(max_workers=max_workers)
-    
+
     if not all_sports_markets:
         logger.warning("No sports markets found!")
         logger.info("📱 Sending notification: No markets found")
-        _send_notification_sync([])
+        _send_notification_sync([], 0, min_liquidity, min_ask_price, max_ask_price)
         return []
     
     # Step 2: Filter for live markets only
     live_markets = filter_live_markets(all_sports_markets, lookback_hours=lookback_hours)
+    live_markets_count = len(live_markets)
     
     if not live_markets:
         logger.warning("No live sports markets found!")
         logger.info(f"Total sports markets: {len(all_sports_markets)}, but none are currently live")
         logger.info("📱 Sending notification: No live markets found")
         # Send notification that no markets found
-        _send_notification_sync([])
+        _send_notification_sync([], 0, min_liquidity, min_ask_price, max_ask_price)
         return []
     
     # Step 3: Filter by liquidity and ask price
@@ -857,9 +1023,12 @@ def run_live_sports_analysis(
     filtered_markets = []
     
     for market in live_markets:
+        market_title = market.get("question", "Unknown Market")
+        
         # Check liquidity filter
         liquidity = float(market.get("liquidityClob", 0))
         if liquidity < min_liquidity:
+            logger.debug(f"❌ FILTERED (liquidity): {market_title[:70]} - Liquidity ${liquidity:.2f} < ${min_liquidity:.2f}")
             continue
         
         # Check if market is live (has start time)
@@ -868,6 +1037,7 @@ def run_live_sports_analysis(
         is_live = hours_since > 0 and market_start_time is not None
         
         if not is_live:
+            logger.debug(f"❌ FILTERED (not live): {market_title[:70]} - hours_since={hours_since}")
             continue
         
         # Fetch pricing and check ask price filter
@@ -880,11 +1050,13 @@ def run_live_sports_analysis(
                 clob_token_ids = []
         
         if not clob_token_ids:
+            logger.debug(f"❌ FILTERED (no token IDs): {market_title[:70]}")
             continue
         
         try:
             pricing_data = fetch_market_pricing(market, client)
             if not pricing_data:
+                logger.debug(f"❌ FILTERED (no pricing data): {market_title[:70]}")
                 continue
             
             # Check if any outcome has ask price in target range
@@ -964,6 +1136,11 @@ def run_live_sports_analysis(
                     "outcomes_info": outcomes_info,
                     "best_ask_price": best_ask_price
                 })
+                logger.info(f"✅ PASSED ALL FILTERS: {market_title[:70]}")
+            else:
+                # Log why market was filtered (no outcome in price range)
+                best_ask_str = f"{best_ask_price*100:.1f}%" if best_ask_price > 0 else "N/A"
+                logger.debug(f"❌ FILTERED (ask price): {market_title[:70]} - Best ask {best_ask_str} not in range {min_ask_price*100:.0f}%-{max_ask_price*100:.0f}%")
         
         except Exception as e:
             logger.debug(f"Error processing market {market.get('question', 'Unknown')}: {e}")
@@ -978,147 +1155,230 @@ def run_live_sports_analysis(
     for i, market in enumerate(filtered_markets, 1):
         log_market_details(market, i, len(filtered_markets), client)
     
-    # Step 5: Send notification about found markets
+    # Step 5: Send notification about found markets (BEFORE balance check)
     logger.info("")
     logger.info("=" * 80)
-    logger.info(f"📱 PREPARING TO SEND NOTIFICATION FOR {len(found_markets_summary)} MARKETS")
+    logger.info(f"📱 PREPARING TO SEND NOTIFICATION")
+    logger.info(f"   Live markets found: {live_markets_count}")
+    logger.info(f"   Matching criteria: {len(found_markets_summary)}")
     logger.info("=" * 80)
-    _send_notification_sync(found_markets_summary)
+    _send_notification_sync(found_markets_summary, live_markets_count, min_liquidity, min_ask_price, max_ask_price)
     
-    # Step 6: Auto-trading - Buy 1 share for each qualifying outcome
-    logger.info("")
-    logger.info("=" * 80)
-    logger.info("💰 AUTO-TRADING PHASE")
-    logger.info("=" * 80)
-    
-    # Check balance before attempting to buy
-    logger.info("💳 Checking balance...")
-    try:
-        balance = get_current(force=True)
-        available_usd = balance.get("available_usd", 0.0)
-        total_usd = balance.get("total_usd", 0.0)
+    # Step 6: Auto-trading - Buy 1 share for each qualifying outcome (if not skipped)
+    if skip_trading:
+        logger.info("")
+        logger.info("=" * 80)
+        logger.info("⏭️  TRADING SKIPPED (skip_trading=True)")
+        logger.info("=" * 80)
+        logger.info("✅ Analysis complete - markets found but trading disabled")
+        logger.info(f"📊 Found {len(filtered_markets)} markets matching criteria")
+        logger.info("=" * 80)
+    else:
+        logger.info("")
+        logger.info("=" * 80)
+        logger.info("💰 AUTO-TRADING PHASE")
+        logger.info("=" * 80)
         
-        logger.info(f"   Available: ${available_usd:.2f}")
-        logger.info(f"   Total: ${total_usd:.2f}")
+        # Close read-only client before balance check to free up httpx connections
+        # This is critical because ClobClient uses requests library (not httpx) and needs available sockets
+        logger.info("")
+        logger.info("=" * 80)
+        logger.info("🔌 CLOSING READ-ONLY CLIENT BEFORE BALANCE CHECK")
+        logger.info("=" * 80)
+        try:
+            client.close()
+            logger.info("✅ Read-only client closed")
+        except Exception as e:
+            logger.warning(f"⚠️  Error closing read-only client: {e}")
         
-        # Check if wallet credentials are available
-        if not settings.wallet_private_key:
-            logger.warning("⚠️  WALLET_PRIVATE_KEY not configured - skipping auto-trading")
-            _send_trading_notification_sync(
-                f"⚠️ <b>Auto-Trading Skipped</b>\n\n"
-                f"❌ WALLET_PRIVATE_KEY not configured\n"
-                f"Please set WALLET_PRIVATE_KEY environment variable or in .env file"
-            )
-        elif available_usd < 1.0:
-            logger.warning("⚠️  Insufficient balance (< $1) - skipping auto-trading")
-            _send_trading_notification_sync(
-                f"⚠️ <b>Auto-Trading Skipped</b>\n\n"
-                f"💳 Available balance: ${available_usd:.2f}\n"
-                f"❌ Minimum required: $1.00"
-            )
-        else:
-            # Initialize authenticated client for trading
-            logger.info("🔐 Initializing authenticated client for trading...")
-            try:
-                trading_client = PolymarketClient(require_auth=True)
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"❌ Failed to initialize trading client: {error_msg}")
-                _send_trading_notification_sync(
-                    f"❌ <b>Auto-Trading Failed</b>\n\n"
-                    f"Failed to initialize authenticated client:\n"
-                    f"{error_msg}\n\n"
-                    f"Please check:\n"
-                    f"• WALLET_PRIVATE_KEY is set\n"
-                    f"• POLYMARKET_PROXY_ADDRESS is set\n"
-                    f"• Credentials are valid"
-                )
-                raise
+        # Small delay to allow httpx connections to be released back to OS
+        # This helps prevent socket exhaustion when ClobClient (using requests) tries to create new connections
+        # On Windows, need much longer delay due to TIME_WAIT state (30-120 seconds)
+        import sys
+        is_windows = sys.platform == "win32"
+        wait_time = 10.0 if is_windows else 2.0  # Increased to 10 seconds on Windows
+        logger.info(f"⏳ Waiting {wait_time}s for connections to be released...")
+        if is_windows:
+            logger.info("   (Windows: sockets can take 30-120s to fully release from TIME_WAIT)")
+            logger.info("   (Waiting 10s to maximize chance of sockets being available)")
+        time.sleep(wait_time)
+        
+        # Check balance before attempting to buy
+        logger.info("")
+        logger.info("=" * 80)
+        logger.info("💳 CHECKING BALANCE")
+        logger.info("=" * 80)
+        try:
+            balance = get_current(force=True)
+            available_usd = balance.get("available_usd", 0.0)
+            total_usd = balance.get("total_usd", 0.0)
+            locked_usd = balance.get("locked_usd", 0.0)
+            positions_usd = balance.get("positions_usd", 0.0)
             
-            # Trading results tracking
-            trading_results = []
-            total_attempted = 0
-            total_successful = 0
-            total_failed = 0
-            total_spent = 0.0
-            
-            # Buy outcomes for each filtered market
             logger.info("")
-            logger.info(f"🛒 PROCESSING {len(filtered_markets)} MARKETS FOR TRADING")
+            logger.info("=" * 80)
+            logger.info("💰 BALANCE CHECK RESULTS")
+            logger.info("=" * 80)
+            logger.info(f"   Available: ${available_usd:.2f}")
+            logger.info(f"   Locked: ${locked_usd:.2f}")
+            logger.info(f"   Positions: ${positions_usd:.2f}")
+            logger.info(f"   Total: ${total_usd:.2f}")
             logger.info("=" * 80)
             
-            for i, market in enumerate(filtered_markets, 1):
-                market_title = market.get("question", "Unknown Market")
+            # Warn if balance seems wrong (total > 0 but available is 0)
+            if total_usd > 0.0 and available_usd == 0.0:
+                logger.warning("⚠️  WARNING: Total balance > $0 but available balance is $0")
+                logger.warning(f"   This might indicate funds are locked in orders or positions")
+                logger.warning(f"   Locked: ${locked_usd:.2f}, Positions: ${positions_usd:.2f}")
+            elif total_usd == 0.0 and available_usd == 0.0:
+                logger.warning("⚠️  WARNING: Balance fetch returned $0.00")
+                logger.warning("   This might indicate:")
+                logger.warning("   • Balance fetch failed (check logs above for errors)")
+                logger.warning("   • Account actually has $0 balance")
+                logger.warning("   • Authentication/credential issues")
+            
+            # Check if wallet credentials are available
+            if not settings.wallet_private_key:
+                logger.warning("⚠️  WALLET_PRIVATE_KEY not configured - skipping auto-trading")
+                _send_trading_notification_sync(
+                    f"⚠️ <b>Auto-Trading Skipped</b>\n\n"
+                    f"❌ WALLET_PRIVATE_KEY not configured\n"
+                    f"Please set WALLET_PRIVATE_KEY environment variable or in .env file"
+                )
+            elif available_usd < 1.0:
+                logger.warning("⚠️  Insufficient balance (< $1) - skipping auto-trading")
+                logger.warning(f"   Balance breakdown: Available=${available_usd:.2f}, Locked=${locked_usd:.2f}, Positions=${positions_usd:.2f}, Total=${total_usd:.2f}")
+                
+                # If total is > 0 but available is 0, funds might be locked or in positions
+                if total_usd > 0.0 and available_usd < 1.0:
+                    logger.warning(f"   💡 Note: You have ${total_usd:.2f} total, but ${available_usd:.2f} available.")
+                    logger.warning(f"   💡 ${locked_usd:.2f} is locked in orders, ${positions_usd:.2f} is in positions.")
+                
+                _send_trading_notification_sync(
+                    f"⚠️ <b>Auto-Trading Skipped</b>\n\n"
+                    f"💳 Available balance: ${available_usd:.2f}\n"
+                    f"❌ Minimum required: $1.00"
+                )
+            else:
+                # Small delay before initializing authenticated client
+                # ClobClient uses requests library which needs available sockets
+                # On Windows, need longer delay due to socket TIME_WAIT state
+                import sys
+                is_windows = sys.platform == "win32"
+                wait_time = 5.0 if is_windows else 1.0  # 5 seconds on Windows
+                logger.info(f"⏳ Waiting {wait_time}s before initializing trading client...")
+                if is_windows:
+                    logger.info("   (Windows: ClobClient needs available sockets - waiting longer)")
+                time.sleep(wait_time)
+                
+                # Initialize authenticated client for trading
+                logger.info("🔐 Initializing authenticated client for trading...")
+                try:
+                    trading_client = PolymarketClient(require_auth=True)
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.error(f"❌ Failed to initialize trading client: {error_msg}")
+                    _send_trading_notification_sync(
+                        f"❌ <b>Auto-Trading Failed</b>\n\n"
+                        f"Failed to initialize authenticated client:\n"
+                        f"{error_msg}\n\n"
+                        f"Please check:\n"
+                        f"• WALLET_PRIVATE_KEY is set\n"
+                        f"• POLYMARKET_PROXY_ADDRESS is set\n"
+                        f"• Credentials are valid"
+                    )
+                    raise
+                
+                # Trading results tracking
+                trading_results = []
+                total_attempted = 0
+                total_successful = 0
+                total_failed = 0
+                total_spent = 0.0
+                
+                # Buy outcomes for each filtered market
                 logger.info("")
-                logger.info(f"[{i}/{len(filtered_markets)}] Processing: {market_title[:80]}")
+                logger.info(f"🛒 PROCESSING {len(filtered_markets)} MARKETS FOR TRADING")
+                logger.info("=" * 80)
                 
-                # Get stored pricing data
-                pricing_data = market.get("_pricing_data", {})
-                if not pricing_data:
-                    logger.warning(f"   ⚠️  No pricing data available - skipping")
-                    continue
+                for i, market in enumerate(filtered_markets, 1):
+                    market_title = market.get("question", "Unknown Market")
+                    logger.info("")
+                    logger.info(f"[{i}/{len(filtered_markets)}] Processing: {market_title[:80]}")
+                    
+                    # Get stored pricing data
+                    pricing_data = market.get("_pricing_data", {})
+                    if not pricing_data:
+                        logger.warning(f"   ⚠️  No pricing data available - skipping")
+                        continue
+                    
+                    # Buy outcomes for this market
+                    results_before = len(trading_results)
+                    trading_results = buy_market_outcomes(
+                        market=market,
+                        pricing_data=pricing_data,
+                        min_ask_price=min_ask_price,
+                        max_ask_price=max_ask_price,
+                        client=trading_client,
+                        balance=balance,
+                        trading_results=trading_results
+                    )
+                    
+                    # Update counters
+                    new_results = trading_results[results_before:]
+                    total_attempted += len(new_results)
+                    for result in new_results:
+                        if result.get("status") == "SUCCESS":
+                            total_successful += 1
+                            total_spent += result.get("cost", 0.0)
+                        else:
+                            total_failed += 1
+                    
+                    # Update balance after each market (approximate, will refresh periodically)
+                    if i % 5 == 0:  # Refresh balance every 5 markets
+                        balance = get_current(force=True)
+                        logger.debug(f"   💳 Refreshed balance: ${balance.get('available_usd', 0.0):.2f}")
                 
-                # Buy outcomes for this market
-                results_before = len(trading_results)
-                trading_results = buy_market_outcomes(
-                    market=market,
-                    pricing_data=pricing_data,
-                    min_ask_price=min_ask_price,
-                    max_ask_price=max_ask_price,
-                    client=trading_client,
-                    balance=balance,
-                    trading_results=trading_results
-                )
+                # Final trading summary
+                logger.info("")
+                logger.info("=" * 80)
+                logger.info("💰 TRADING SUMMARY")
+                logger.info("=" * 80)
+                logger.info(f"📊 Markets processed: {len(filtered_markets)}")
+                logger.info(f"🎯 Outcomes attempted: {total_attempted}")
+                logger.info(f"✅ Successful buys: {total_successful}")
+                logger.info(f"❌ Failed buys: {total_failed}")
+                logger.info(f"💵 Total spent: ${total_spent:.2f}")
                 
-                # Update counters
-                new_results = trading_results[results_before:]
-                total_attempted += len(new_results)
-                for result in new_results:
-                    if result.get("status") == "SUCCESS":
-                        total_successful += 1
-                        total_spent += result.get("cost", 0.0)
-                    else:
-                        total_failed += 1
+                # Get final balance
+                final_balance = get_current(force=True)
+                logger.info(f"💳 Final available balance: ${final_balance.get('available_usd', 0.0):.2f}")
+                logger.info("=" * 80)
                 
-                # Update balance after each market (approximate, will refresh periodically)
-                if i % 5 == 0:  # Refresh balance every 5 markets
-                    balance = get_current(force=True)
-                    logger.debug(f"   💳 Refreshed balance: ${balance.get('available_usd', 0.0):.2f}")
-            
-            # Final trading summary
-            logger.info("")
-            logger.info("=" * 80)
-            logger.info("💰 TRADING SUMMARY")
-            logger.info("=" * 80)
-            logger.info(f"📊 Markets processed: {len(filtered_markets)}")
-            logger.info(f"🎯 Outcomes attempted: {total_attempted}")
-            logger.info(f"✅ Successful buys: {total_successful}")
-            logger.info(f"❌ Failed buys: {total_failed}")
-            logger.info(f"💵 Total spent: ${total_spent:.2f}")
-            
-            # Get final balance
-            final_balance = get_current(force=True)
-            logger.info(f"💳 Final available balance: ${final_balance.get('available_usd', 0.0):.2f}")
-            logger.info("=" * 80)
-            
-            # Send final trading summary notification
-            if total_attempted > 0:
-                success_rate = (total_successful / total_attempted * 100) if total_attempted > 0 else 0
-                _send_trading_notification_sync(
-                    f"📊 <b>Trading Summary</b>\n\n"
-                    f"✅ Successful: {total_successful}/{total_attempted} ({success_rate:.1f}%)\n"
-                    f"❌ Failed: {total_failed}\n"
-                    f"💵 Total spent: ${total_spent:.2f}\n"
-                    f"💳 Remaining: ${final_balance.get('available_usd', 0.0):.2f}"
-                )
-    except Exception as e:
-        logger.error(f"❌ Error during auto-trading phase: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        _send_trading_notification_sync(
-            f"❌ <b>Auto-Trading Error</b>\n\n"
-            f"Error: {str(e)[:200]}"
-        )
+                # Close trading client to free connections
+                try:
+                    trading_client.close()
+                except Exception:
+                    pass
+                
+                # Send final trading summary notification
+                if total_attempted > 0:
+                    success_rate = (total_successful / total_attempted * 100) if total_attempted > 0 else 0
+                    _send_trading_notification_sync(
+                        f"📊 <b>Trading Summary</b>\n\n"
+                        f"✅ Successful: {total_successful}/{total_attempted} ({success_rate:.1f}%)\n"
+                        f"❌ Failed: {total_failed}\n"
+                        f"💵 Total spent: ${total_spent:.2f}\n"
+                        f"💳 Remaining: ${final_balance.get('available_usd', 0.0):.2f}"
+                    )
+        except Exception as e:
+            logger.error(f"❌ Error during auto-trading phase: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            _send_trading_notification_sync(
+                f"❌ <b>Auto-Trading Error</b>\n\n"
+                f"Error: {str(e)[:200]}"
+            )
     
     # Final summary
     elapsed = time.time() - start_time
@@ -1275,11 +1535,21 @@ def _send_trading_notification_sync(message: str) -> None:
         logger.error(f"❌ Error in trading notification: {e}")
 
 
-def _send_notification_sync(found_markets: list[dict[str, Any]]) -> None:
+def _send_notification_sync(
+    found_markets: list[dict[str, Any]],
+    live_markets_count: int = 0,
+    min_liquidity: float = 500.0,
+    min_ask_price: float = 0.93,
+    max_ask_price: float = 0.96
+) -> None:
     """Send notification via bot_b (synchronous wrapper).
     
     Args:
-        found_markets: List of market summary dictionaries
+        found_markets: List of market summary dictionaries matching criteria
+        live_markets_count: Total number of live markets found (before filtering)
+        min_liquidity: Minimum liquidity threshold used for filtering
+        min_ask_price: Minimum ask price (0-1) used for filtering
+        max_ask_price: Maximum ask price (0-1) used for filtering
     """
     logger.info("=" * 80)
     logger.info("📱 ATTEMPTING TO SEND NOTIFICATION")
@@ -1302,9 +1572,9 @@ def _send_notification_sync(found_markets: list[dict[str, Any]]) -> None:
             return
         
         logger.info(f"✅ Chat ID configured: {chat_id}")
-        logger.info(f"📊 Found markets count: {len(found_markets)}")
+        logger.info(f"📊 Live markets found: {live_markets_count}, Matching criteria: {len(found_markets)}")
         
-        message = format_markets_notification(found_markets)
+        message = format_markets_notification(found_markets, live_markets_count, min_liquidity, min_ask_price, max_ask_price)
         logger.info(f"📝 Formatted notification message ({len(message)} characters)")
         logger.debug(f"Message preview: {message[:200]}...")
         
