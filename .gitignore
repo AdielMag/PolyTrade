@@ -51,3 +51,4 @@ service-account-key.json
 # Logs
 *.log
 logs/
+*.env

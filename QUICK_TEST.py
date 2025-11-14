@@ -36,8 +36,8 @@ if __name__ == "__main__":
             max_workers=15,         # 10 concurrent threads
             lookback_hours=4.0,      # Games started within last 4 hours
             min_liquidity=500.0,    # Minimum liquidity $500
-            min_ask_price=0.93,     # Minimum ask price 93%
-            max_ask_price=0.96      # Maximum ask price 96%
+            min_ask_price=0.8,     # Minimum ask price 93%
+            max_ask_price=0.95      # Maximum ask price 96%
         )
         
         print("\n" + "=" * 80)

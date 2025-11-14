@@ -10,7 +10,9 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from ...shared.balances import get_current
 from ...shared.config import settings
+from ...shared.firestore import add_doc
 from ...shared.polymarket_client import PolymarketClient
 
 # Optional import for bot_b notifications
@@ -438,6 +440,289 @@ def log_market_details(market: dict[str, Any], index: int, total: int, client: P
     logger.info("=" * 80)
 
 
+def has_existing_position(condition_id: str, market_title: str, balance: dict[str, Any]) -> bool:
+    """Check if user already has a position in this market.
+    
+    Args:
+        condition_id: Market condition ID
+        market_title: Market question/title
+        balance: Balance dict with positions list
+        
+    Returns:
+        True if position exists, False otherwise
+    """
+    positions = balance.get("positions", [])
+    if not positions:
+        return False
+    
+    # Check each position for matching market
+    for position in positions:
+        pos_title = position.get("title", "")
+        # Match by title (most reliable) or condition_id if available
+        if pos_title and market_title:
+            # Normalize titles for comparison (case-insensitive, strip whitespace)
+            if pos_title.strip().lower() == market_title.strip().lower():
+                logger.debug(f"Found existing position in market: {market_title[:60]}")
+                return True
+    
+    return False
+
+
+def buy_market_outcomes(
+    market: dict[str, Any],
+    pricing_data: dict[str, Any],
+    min_ask_price: float,
+    max_ask_price: float,
+    client: PolymarketClient,
+    balance: dict[str, Any],
+    trading_results: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Buy 1 share for each outcome in the market that has ask price in target range.
+    
+    Args:
+        market: Market data dictionary
+        pricing_data: Pricing data for all outcomes (from fetch_market_pricing)
+        min_ask_price: Minimum ask price (0-1)
+        max_ask_price: Maximum ask price (0-1)
+        client: Authenticated PolymarketClient
+        balance: Current balance dict
+        trading_results: List to append trade results to
+        
+    Returns:
+        List of trade results (one per outcome attempted)
+    """
+    market_title = market.get("question", "Unknown Market")
+    condition_id = market.get("condition_id", "")
+    neg_risk = market.get("negRisk", False) or market.get("negRiskMarketID") is not None
+    
+    # Check if user already has position in this market
+    if has_existing_position(condition_id, market_title, balance):
+        logger.info(f"⏭️  Skipping {market_title[:60]}... - already have position")
+        _send_trading_notification_sync(
+            f"⏭️ <b>Skipped Market</b>\n\n"
+            f"📊 {market_title[:100]}\n\n"
+            f"Reason: Already have position in this market"
+        )
+        return trading_results
+    
+    # Get outcomes list
+    outcomes = market.get("outcomes", ["YES", "NO"])
+    if isinstance(outcomes, str):
+        import json
+        try:
+            outcomes = json.loads(outcomes)
+        except:
+            outcomes = ["YES", "NO"]
+    if not isinstance(outcomes, list):
+        outcomes = ["YES", "NO"]
+    
+    # Find all outcomes with ask price in target range
+    outcomes_to_buy = []
+    for outcome_name, outcome_data in pricing_data.items():
+        ask_price = outcome_data.get("best_ask", 0.0)
+        token_id = outcome_data.get("token_id", "")
+        
+        if ask_price > 0 and min_ask_price <= ask_price <= max_ask_price:
+            if token_id:
+                outcomes_to_buy.append({
+                    "outcome_name": outcome_name,
+                    "token_id": token_id,
+                    "ask_price": ask_price,
+                    "cost": ask_price * 1.0  # 1 share
+                })
+    
+    if not outcomes_to_buy:
+        logger.debug(f"No outcomes in price range for {market_title[:60]}")
+        return trading_results
+    
+    logger.info("")
+    logger.info(f"💰 ATTEMPTING TO BUY {len(outcomes_to_buy)} OUTCOME(S) IN MARKET:")
+    logger.info(f"   {market_title[:80]}")
+    logger.info(f"   Condition ID: {condition_id}")
+    
+    # Buy each qualifying outcome
+    for outcome_info in outcomes_to_buy:
+        outcome_name = outcome_info["outcome_name"]
+        token_id = outcome_info["token_id"]
+        ask_price = outcome_info["ask_price"]
+        cost = outcome_info["cost"]
+        
+        # Check available balance
+        available_usd = balance.get("available_usd", 0.0)
+        if available_usd < cost:
+            logger.warning(f"❌ Insufficient balance: need ${cost:.4f}, have ${available_usd:.2f}")
+            _send_trading_notification_sync(
+                f"❌ <b>Buy Failed</b>\n\n"
+                f"📊 {market_title[:100]}\n"
+                f"🎯 Outcome: {outcome_name}\n"
+                f"💰 Cost: ${cost:.4f}\n\n"
+                f"Reason: Insufficient balance (have ${available_usd:.2f})"
+            )
+            trading_results.append({
+                "market": market_title,
+                "outcome": outcome_name,
+                "status": "FAILED",
+                "reason": "insufficient_balance",
+                "cost": cost,
+                "available": available_usd
+            })
+            continue
+        
+        # Construct side parameter
+        if outcome_name.upper() in ["YES", "NO"]:
+            side = f"BUY_{outcome_name.upper()}"
+        else:
+            # For multi-outcome markets, use outcome name
+            side = f"BUY_{outcome_name.upper().replace(' ', '_')}"
+        
+        # Log buy attempt
+        logger.info("")
+        logger.info(f"🛒 ATTEMPTING BUY:")
+        logger.info(f"   Market: {market_title[:80]}")
+        logger.info(f"   Outcome: {outcome_name}")
+        logger.info(f"   Token ID: {token_id}")
+        logger.info(f"   Side: {side}")
+        logger.info(f"   Price: ${ask_price:.4f} ({ask_price*100:.2f}%)")
+        logger.info(f"   Size: 1.0 share")
+        logger.info(f"   Cost: ${cost:.4f}")
+        logger.info(f"   Available balance: ${available_usd:.2f}")
+        logger.info(f"   NegRisk: {neg_risk}")
+        
+        # Send notification before buy attempt
+        _send_trading_notification_sync(
+            f"🛒 <b>Attempting Buy</b>\n\n"
+            f"📊 {market_title[:100]}\n"
+            f"🎯 Outcome: {outcome_name}\n"
+            f"💰 Price: ${ask_price:.4f} ({ask_price*100:.2f}%)\n"
+            f"💵 Cost: ${cost:.4f}\n"
+            f"💳 Balance: ${available_usd:.2f}"
+        )
+        
+        # Add delay to avoid rate limiting
+        delay = 1.5  # 1.5 second delay between orders
+        logger.info(f"⏳ Waiting {delay}s before placing order...")
+        time.sleep(delay)
+        
+        # Place order
+        try:
+            logger.info(f"📤 Placing order...")
+            order_result = client.place_order(
+                token_id=token_id,
+                side=side,
+                price=ask_price,
+                size=1.0,
+                neg_risk=neg_risk
+            )
+            
+            # Check if order was successful
+            if order_result.get("ok"):
+                order_id = order_result.get("resp", {}).get("id", "unknown")
+                logger.info(f"✅ BUY SUCCESSFUL!")
+                logger.info(f"   Order ID: {order_id}")
+                logger.info(f"   Cost: ${cost:.4f}")
+                
+                # Update balance (approximate - will be accurate on next fetch)
+                balance["available_usd"] = available_usd - cost
+                
+                # Save trade to Firestore
+                try:
+                    trade_data = {
+                        "suggestionId": None,  # Auto-trade, no suggestion
+                        "tokenId": token_id,
+                        "marketId": condition_id,
+                        "title": market_title,
+                        "side": side,
+                        "size": 1.0,
+                        "entryPx": ask_price,
+                        "status": "OPEN",
+                        "pnl": 0.0,
+                        "slPct": settings.default_sl_pct,
+                        "tpPct": settings.default_tp_pct,
+                        "userChatId": settings.bot_b_default_chat_id,
+                        "createdAt": int(time.time()),
+                        "closedAt": None,
+                    }
+                    trade_id = add_doc("trades", trade_data)
+                    logger.info(f"💾 Trade saved to Firestore: {trade_id}")
+                    
+                    # Create event
+                    add_doc("events", {
+                        "tradeId": trade_id,
+                        "type": "CREATED",
+                        "message": f"Auto-trade: Bought 1 share of {outcome_name} at ${ask_price:.4f}",
+                        "createdAt": int(time.time())
+                    })
+                except Exception as e:
+                    error_str = str(e)
+                    if "credentials" in error_str.lower() or "authentication" in error_str.lower():
+                        logger.error(f"❌ Failed to save trade to Firestore: GCP credentials not configured")
+                        logger.error(f"   To fix: Set GOOGLE_APPLICATION_CREDENTIALS environment variable")
+                        logger.error(f"   Or run: gcloud auth application-default login")
+                    else:
+                        logger.error(f"❌ Failed to save trade to Firestore: {e}")
+                
+                # Send success notification
+                _send_trading_notification_sync(
+                    f"✅ <b>Buy Successful</b>\n\n"
+                    f"📊 {market_title[:100]}\n"
+                    f"🎯 Outcome: {outcome_name}\n"
+                    f"💰 Cost: ${cost:.4f}\n"
+                    f"🆔 Order ID: {order_id}\n"
+                    f"💳 Remaining: ${balance['available_usd']:.2f}"
+                )
+                
+                trading_results.append({
+                    "market": market_title,
+                    "outcome": outcome_name,
+                    "status": "SUCCESS",
+                    "order_id": order_id,
+                    "cost": cost,
+                    "remaining_balance": balance["available_usd"]
+                })
+            else:
+                error_msg = order_result.get("resp", {}).get("error", "Unknown error")
+                logger.error(f"❌ BUY FAILED: {error_msg}")
+                _send_trading_notification_sync(
+                    f"❌ <b>Buy Failed</b>\n\n"
+                    f"📊 {market_title[:100]}\n"
+                    f"🎯 Outcome: {outcome_name}\n\n"
+                    f"Reason: {error_msg}"
+                )
+                trading_results.append({
+                    "market": market_title,
+                    "outcome": outcome_name,
+                    "status": "FAILED",
+                    "reason": error_msg,
+                    "cost": cost
+                })
+        except Exception as e:
+            error_str = str(e)
+            logger.error(f"❌ BUY EXCEPTION: {error_str}")
+            
+            # Check for Cloudflare blocks
+            if "cloudflare" in error_str.lower() or "403" in error_str or "attention required" in error_str.lower():
+                reason = "Cloudflare block - too many requests"
+            else:
+                reason = error_str[:200]  # Truncate long errors
+            
+            _send_trading_notification_sync(
+                f"❌ <b>Buy Failed</b>\n\n"
+                f"📊 {market_title[:100]}\n"
+                f"🎯 Outcome: {outcome_name}\n\n"
+                f"Reason: {reason}"
+            )
+            
+            trading_results.append({
+                "market": market_title,
+                "outcome": outcome_name,
+                "status": "FAILED",
+                "reason": reason,
+                "cost": cost
+            })
+    
+    return trading_results
+
+
 def format_markets_notification(found_markets: list[dict[str, Any]]) -> str:
     """Format markets data into a Telegram notification message.
     
@@ -669,7 +954,8 @@ def run_live_sports_analysis(
                             best_ask_price = ask
             
             if has_target_price:
-                # Market passed all filters
+                # Market passed all filters - store pricing data for trading
+                market["_pricing_data"] = pricing_data  # Store pricing data with market
                 filtered_markets.append(market)
                 found_markets_summary.append({
                     "title": market.get("question", "Unknown Market"),
@@ -692,12 +978,147 @@ def run_live_sports_analysis(
     for i, market in enumerate(filtered_markets, 1):
         log_market_details(market, i, len(filtered_markets), client)
     
-    # Step 5: Send notification
+    # Step 5: Send notification about found markets
     logger.info("")
     logger.info("=" * 80)
     logger.info(f"📱 PREPARING TO SEND NOTIFICATION FOR {len(found_markets_summary)} MARKETS")
     logger.info("=" * 80)
     _send_notification_sync(found_markets_summary)
+    
+    # Step 6: Auto-trading - Buy 1 share for each qualifying outcome
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("💰 AUTO-TRADING PHASE")
+    logger.info("=" * 80)
+    
+    # Check balance before attempting to buy
+    logger.info("💳 Checking balance...")
+    try:
+        balance = get_current(force=True)
+        available_usd = balance.get("available_usd", 0.0)
+        total_usd = balance.get("total_usd", 0.0)
+        
+        logger.info(f"   Available: ${available_usd:.2f}")
+        logger.info(f"   Total: ${total_usd:.2f}")
+        
+        # Check if wallet credentials are available
+        if not settings.wallet_private_key:
+            logger.warning("⚠️  WALLET_PRIVATE_KEY not configured - skipping auto-trading")
+            _send_trading_notification_sync(
+                f"⚠️ <b>Auto-Trading Skipped</b>\n\n"
+                f"❌ WALLET_PRIVATE_KEY not configured\n"
+                f"Please set WALLET_PRIVATE_KEY environment variable or in .env file"
+            )
+        elif available_usd < 1.0:
+            logger.warning("⚠️  Insufficient balance (< $1) - skipping auto-trading")
+            _send_trading_notification_sync(
+                f"⚠️ <b>Auto-Trading Skipped</b>\n\n"
+                f"💳 Available balance: ${available_usd:.2f}\n"
+                f"❌ Minimum required: $1.00"
+            )
+        else:
+            # Initialize authenticated client for trading
+            logger.info("🔐 Initializing authenticated client for trading...")
+            try:
+                trading_client = PolymarketClient(require_auth=True)
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"❌ Failed to initialize trading client: {error_msg}")
+                _send_trading_notification_sync(
+                    f"❌ <b>Auto-Trading Failed</b>\n\n"
+                    f"Failed to initialize authenticated client:\n"
+                    f"{error_msg}\n\n"
+                    f"Please check:\n"
+                    f"• WALLET_PRIVATE_KEY is set\n"
+                    f"• POLYMARKET_PROXY_ADDRESS is set\n"
+                    f"• Credentials are valid"
+                )
+                raise
+            
+            # Trading results tracking
+            trading_results = []
+            total_attempted = 0
+            total_successful = 0
+            total_failed = 0
+            total_spent = 0.0
+            
+            # Buy outcomes for each filtered market
+            logger.info("")
+            logger.info(f"🛒 PROCESSING {len(filtered_markets)} MARKETS FOR TRADING")
+            logger.info("=" * 80)
+            
+            for i, market in enumerate(filtered_markets, 1):
+                market_title = market.get("question", "Unknown Market")
+                logger.info("")
+                logger.info(f"[{i}/{len(filtered_markets)}] Processing: {market_title[:80]}")
+                
+                # Get stored pricing data
+                pricing_data = market.get("_pricing_data", {})
+                if not pricing_data:
+                    logger.warning(f"   ⚠️  No pricing data available - skipping")
+                    continue
+                
+                # Buy outcomes for this market
+                results_before = len(trading_results)
+                trading_results = buy_market_outcomes(
+                    market=market,
+                    pricing_data=pricing_data,
+                    min_ask_price=min_ask_price,
+                    max_ask_price=max_ask_price,
+                    client=trading_client,
+                    balance=balance,
+                    trading_results=trading_results
+                )
+                
+                # Update counters
+                new_results = trading_results[results_before:]
+                total_attempted += len(new_results)
+                for result in new_results:
+                    if result.get("status") == "SUCCESS":
+                        total_successful += 1
+                        total_spent += result.get("cost", 0.0)
+                    else:
+                        total_failed += 1
+                
+                # Update balance after each market (approximate, will refresh periodically)
+                if i % 5 == 0:  # Refresh balance every 5 markets
+                    balance = get_current(force=True)
+                    logger.debug(f"   💳 Refreshed balance: ${balance.get('available_usd', 0.0):.2f}")
+            
+            # Final trading summary
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("💰 TRADING SUMMARY")
+            logger.info("=" * 80)
+            logger.info(f"📊 Markets processed: {len(filtered_markets)}")
+            logger.info(f"🎯 Outcomes attempted: {total_attempted}")
+            logger.info(f"✅ Successful buys: {total_successful}")
+            logger.info(f"❌ Failed buys: {total_failed}")
+            logger.info(f"💵 Total spent: ${total_spent:.2f}")
+            
+            # Get final balance
+            final_balance = get_current(force=True)
+            logger.info(f"💳 Final available balance: ${final_balance.get('available_usd', 0.0):.2f}")
+            logger.info("=" * 80)
+            
+            # Send final trading summary notification
+            if total_attempted > 0:
+                success_rate = (total_successful / total_attempted * 100) if total_attempted > 0 else 0
+                _send_trading_notification_sync(
+                    f"📊 <b>Trading Summary</b>\n\n"
+                    f"✅ Successful: {total_successful}/{total_attempted} ({success_rate:.1f}%)\n"
+                    f"❌ Failed: {total_failed}\n"
+                    f"💵 Total spent: ${total_spent:.2f}\n"
+                    f"💳 Remaining: ${final_balance.get('available_usd', 0.0):.2f}"
+                )
+    except Exception as e:
+        logger.error(f"❌ Error during auto-trading phase: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        _send_trading_notification_sync(
+            f"❌ <b>Auto-Trading Error</b>\n\n"
+            f"Error: {str(e)[:200]}"
+        )
     
     # Final summary
     elapsed = time.time() - start_time
@@ -808,6 +1229,50 @@ def _send_start_notification(
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         logger.info("=" * 80)
+
+
+def _send_trading_notification_sync(message: str) -> None:
+    """Send a trading-related notification via Telegram.
+    
+    Args:
+        message: HTML-formatted message to send
+    """
+    logger.info("📱 Preparing trading notification...")
+    
+    if not BOT_B_AVAILABLE:
+        logger.debug("❌ bot_b not available - skipping trading notification")
+        return
+    
+    try:
+        chat_id = settings.bot_b_default_chat_id
+        if not chat_id:
+            logger.debug("❌ BOT_B_DEFAULT_CHAT_ID not configured - skipping trading notification")
+            return
+        
+        logger.info(f"📤 Sending trading notification to chat {chat_id}...")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            loop.run_until_complete(asyncio.wait_for(_send_notification_direct(chat_id, message), timeout=10.0))
+            logger.info(f"✅ Trading notification sent successfully")
+        except asyncio.TimeoutError:
+            logger.error("❌ Trading notification timed out after 10 seconds")
+        except Exception as e:
+            logger.error(f"❌ Error sending trading notification: {e}")
+        finally:
+            try:
+                # Cancel pending tasks
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            finally:
+                loop.close()
+    except Exception as e:
+        logger.error(f"❌ Error in trading notification: {e}")
 
 
 def _send_notification_sync(found_markets: list[dict[str, Any]]) -> None:
