@@ -582,7 +582,8 @@ def buy_market_outcomes(
     max_ask_price: float,
     client: PolymarketClient,
     balance: dict[str, Any],
-    trading_results: list[dict[str, Any]]
+    trading_results: list[dict[str, Any]],
+    use_market_orders: bool = True
 ) -> list[dict[str, Any]]:
     """Buy 1 share for each outcome in the market that has ask price in target range.
     
@@ -607,7 +608,7 @@ def buy_market_outcomes(
         logger.info(f"⏭️  Skipping {market_title[:60]}... - already have position")
         _send_trading_notification_sync(
             f"⏭️ <b>Skipped Market</b>\n\n"
-            f"📊 {html.escape(market_title[:100])}\n\n"
+            f"📊 {html.escape(market_title[:80])}\n\n"
             f"Reason: Already have position in this market"
         )
         return trading_results
@@ -660,8 +661,8 @@ def buy_market_outcomes(
             logger.warning(f"❌ Insufficient balance: need ${cost:.4f}, have ${available_usd:.2f}")
             _send_trading_notification_sync(
                 f"❌ <b>Buy Failed</b>\n\n"
-                f"📊 {html.escape(market_title[:100])}\n"
-                f"🎯 Outcome: {html.escape(outcome_name)}\n"
+                f"📊 {html.escape(market_title[:80])}\n"
+                f"🎯 Outcome: {html.escape(outcome_name[:50])}\n"
                 f"💰 Cost: ${cost:.4f}\n\n"
                 f"Reason: Insufficient balance (have ${available_usd:.2f})"
             )
@@ -698,8 +699,8 @@ def buy_market_outcomes(
         # Send notification before buy attempt
         _send_trading_notification_sync(
             f"🛒 <b>Attempting Buy</b>\n\n"
-            f"📊 {html.escape(market_title[:100])}\n"
-            f"🎯 Outcome: {html.escape(outcome_name)}\n"
+            f"📊 {html.escape(market_title[:80])}\n"
+            f"🎯 Outcome: {html.escape(outcome_name[:50])}\n"
             f"💰 Price: ${ask_price:.4f} ({ask_price*100:.2f}%)\n"
             f"💵 Cost: ${cost:.4f}\n"
             f"💳 Balance: ${available_usd:.2f}"
@@ -719,14 +720,25 @@ def buy_market_outcomes(
         
         # Place order (single attempt only - no retries)
         try:
-            logger.info(f"📤 Placing order (single attempt, no retries)...")
-            order_result = client.place_order(
-                token_id=token_id,
-                side=side,
-                price=ask_price,
-                size=1.0,
-                neg_risk=neg_risk
-            )
+            if use_market_orders:
+                logger.info(f"📤 Placing MARKET ORDER (FOK - Fill or Kill)...")
+                logger.info(f"   This will execute immediately at best available price")
+                order_result = client.place_market_order(
+                    token_id=token_id,
+                    side=side,
+                    amount=1.0,
+                    neg_risk=neg_risk
+                )
+            else:
+                logger.info(f"📤 Placing LIMIT ORDER (GTC - Good Till Cancel)...")
+                logger.info(f"   Price: ${ask_price:.4f} ({ask_price*100:.2f}%)")
+                order_result = client.place_order(
+                    token_id=token_id,
+                    side=side,
+                    price=ask_price,
+                    size=1.0,
+                    neg_risk=neg_risk
+                )
             
             # Check if order was successful
             if order_result.get("ok"):
@@ -778,10 +790,10 @@ def buy_market_outcomes(
                 # Send success notification
                 _send_trading_notification_sync(
                     f"✅ <b>Buy Successful</b>\n\n"
-                    f"📊 {html.escape(market_title[:100])}\n"
-                    f"🎯 Outcome: {html.escape(outcome_name)}\n"
+                    f"📊 {html.escape(market_title[:80])}\n"
+                    f"🎯 Outcome: {html.escape(outcome_name[:50])}\n"
                     f"💰 Cost: ${cost:.4f}\n"
-                    f"🆔 Order ID: {html.escape(str(order_id))}\n"
+                    f"🆔 Order ID: {html.escape(str(order_id)[:50])}\n"
                     f"💳 Remaining: ${balance['available_usd']:.2f}"
                 )
                 
@@ -809,15 +821,15 @@ def buy_market_outcomes(
                 if is_socket_error:
                     logger.error(f"❌ BUY FAILED (Socket Exhaustion): {error_msg}")
                     logger.error("   ClobClient uses requests library which cannot share httpx connection pool")
-                    detailed_reason = f"Socket exhaustion - ClobClient needs available sockets\n\nError: {error_msg}"
+                    detailed_reason = f"Socket exhaustion - ClobClient needs available sockets\n\nError: {error_msg[:300]}"
                 else:
                     logger.error(f"❌ BUY FAILED: {error_msg}")
-                    detailed_reason = error_msg
+                    detailed_reason = error_msg[:300]  # Truncate error message
                 
                 _send_trading_notification_sync(
                     f"❌ <b>Buy Failed</b>\n\n"
-                    f"📊 {html.escape(market_title[:100])}\n"
-                    f"🎯 Outcome: {html.escape(outcome_name)}\n\n"
+                    f"📊 {html.escape(market_title[:80])}\n"
+                    f"🎯 Outcome: {html.escape(outcome_name[:50])}\n\n"
                     f"Reason: {html.escape(detailed_reason)}"
                 )
                 trading_results.append({
@@ -840,8 +852,8 @@ def buy_market_outcomes(
             
             _send_trading_notification_sync(
                 f"❌ <b>Buy Failed</b>\n\n"
-                f"📊 {html.escape(market_title[:100])}\n"
-                f"🎯 Outcome: {html.escape(outcome_name)}\n\n"
+                f"📊 {html.escape(market_title[:80])}\n"
+                f"🎯 Outcome: {html.escape(outcome_name[:50])}\n\n"
                 f"Reason: {html.escape(reason)}"
             )
             
@@ -918,12 +930,13 @@ def format_markets_notification(
         outcomes_info = market.get("outcomes_info", [])
         
         # Escape HTML entities in title and outcome names to prevent Telegram parsing errors
-        escaped_title = html.escape(title)
+        # Truncate title and outcome names to prevent message length issues
+        escaped_title = html.escape(title[:100])  # Limit title to 100 chars
         message_parts.append(f"<b>{i}. {escaped_title}</b>\n")
         
         if outcomes_info:
             for outcome_name, prob, price in outcomes_info:
-                escaped_outcome = html.escape(outcome_name)
+                escaped_outcome = html.escape(outcome_name[:50])  # Limit outcome name to 50 chars
                 message_parts.append(f"   • {escaped_outcome}: <b>{prob:.2f}%</b> (${price:.4f})\n")
         
         message_parts.append(f"   💧 Liquidity: ${liquidity:,.2f}\n")
@@ -1282,14 +1295,16 @@ def run_live_sports_analysis(
                 except Exception as e:
                     error_msg = str(e)
                     logger.error(f"❌ Failed to initialize trading client: {error_msg}")
+                    # Truncate error message to prevent message length issues
+                    truncated_error = error_msg[:300] if len(error_msg) > 300 else error_msg
                     _send_trading_notification_sync(
                         f"❌ <b>Auto-Trading Failed</b>\n\n"
-                        f"Failed to initialize authenticated client:\n"
-                        f"{error_msg}\n\n"
-                        f"Please check:\n"
-                        f"• WALLET_PRIVATE_KEY is set\n"
-                        f"• POLYMARKET_PROXY_ADDRESS is set\n"
-                        f"• Credentials are valid"
+                        f"Failed to initialize client:\n"
+                        f"{html.escape(truncated_error)}\n\n"
+                        f"Check:\n"
+                        f"• WALLET_PRIVATE_KEY\n"
+                        f"• POLYMARKET_PROXY_ADDRESS\n"
+                        f"• Credentials"
                     )
                     raise
                 
@@ -1317,6 +1332,7 @@ def run_live_sports_analysis(
                         continue
                     
                     # Buy outcomes for this market
+                    # Use market orders (FOK) for immediate execution
                     results_before = len(trading_results)
                     trading_results = buy_market_outcomes(
                         market=market,
@@ -1325,7 +1341,8 @@ def run_live_sports_analysis(
                         max_ask_price=max_ask_price,
                         client=trading_client,
                         balance=balance,
-                        trading_results=trading_results
+                        trading_results=trading_results,
+                        use_market_orders=True  # Use market orders for immediate execution
                     )
                     
                     # Update counters
@@ -1501,6 +1518,13 @@ def _send_trading_notification_sync(message: str) -> None:
     Args:
         message: HTML-formatted message to send
     """
+    # Telegram has a 4096 character limit - truncate if needed
+    TELEGRAM_MAX_LENGTH = 4096
+    if len(message) > TELEGRAM_MAX_LENGTH:
+        logger.warning(f"⚠️  Message too long ({len(message)} chars), truncating to {TELEGRAM_MAX_LENGTH} chars")
+        # Truncate and add indicator
+        message = message[:TELEGRAM_MAX_LENGTH - 50] + "\n\n<i>... (message truncated)</i>"
+    
     logger.info("📱 Preparing trading notification...")
     
     if not BOT_B_AVAILABLE:
@@ -1513,7 +1537,7 @@ def _send_trading_notification_sync(message: str) -> None:
             logger.debug("❌ BOT_B_DEFAULT_CHAT_ID not configured - skipping trading notification")
             return
         
-        logger.info(f"📤 Sending trading notification to chat {chat_id}...")
+        logger.info(f"📤 Sending trading notification to chat {chat_id}... (length: {len(message)} chars)")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
@@ -1547,6 +1571,8 @@ def _send_notification_sync(
     max_ask_price: float = 0.96
 ) -> None:
     """Send notification via bot_b (synchronous wrapper).
+    
+    Ensures message stays under Telegram's 4096 character limit.
     
     Args:
         found_markets: List of market summary dictionaries matching criteria
@@ -1588,7 +1614,13 @@ def _send_notification_sync(
         asyncio.set_event_loop(loop)
         
         try:
-            logger.info(f"📤 Sending notification to chat {chat_id}...")
+            # Telegram has a 4096 character limit - truncate if needed
+            TELEGRAM_MAX_LENGTH = 4096
+            if len(message) > TELEGRAM_MAX_LENGTH:
+                logger.warning(f"⚠️  Market notification too long ({len(message)} chars), truncating to {TELEGRAM_MAX_LENGTH} chars")
+                message = message[:TELEGRAM_MAX_LENGTH - 50] + "\n\n<i>... (message truncated)</i>"
+            
+            logger.info(f"📤 Sending notification to chat {chat_id}... (length: {len(message)} chars)")
             # Add timeout to prevent hanging - use direct notification to avoid Firestore
             loop.run_until_complete(asyncio.wait_for(_send_notification_direct(chat_id, message), timeout=10.0))
             logger.info(f"✅ Notification sent successfully to chat {chat_id}")

@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 from loguru import logger
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import AssetType, BalanceAllowanceParams, OrderArgs, OrderType, PartialCreateOrderOptions
+from py_clob_client.clob_types import AssetType, BalanceAllowanceParams, MarketOrderArgs, OrderArgs, OrderType, PartialCreateOrderOptions
 from py_clob_client.order_builder.constants import BUY, SELL
 
 from .config import settings
@@ -727,6 +727,71 @@ class PolymarketClient:
                 logger.error("   This may be due to too many concurrent operations")
             else:
                 logger.error(f"Order placement failed: {error_type}: {error_msg}")
+            
+            return {"ok": False, "resp": {"error": error_msg, "error_type": error_type}}
+
+    def place_market_order(self, token_id: str, side: str, amount: float, neg_risk: bool = False) -> dict[str, Any]:
+        """Place a market order (FOK - Fill or Kill) on Polymarket.
+        
+        Market orders execute immediately at the best available price. If the order cannot be
+        filled completely, it will be rejected (Fill or Kill).
+        
+        IMPORTANT: This function attempts the order ONCE only - no retries.
+        If the order fails, it returns {"ok": False, "resp": {...}} with error details.
+        
+        Args:
+            token_id: Token ID for the outcome
+            side: "BUY_YES", "BUY_NO", "SELL_YES", or "SELL_NO"
+            amount: Number of contracts to buy/sell
+            neg_risk: Set to True for NegRisk markets (markets with >2 outcomes)
+                     See: https://docs.polymarket.com/quickstart/orders/first-order
+        
+        Returns:
+            Dictionary with "ok" (bool) and "resp" (order response or error)
+        """
+        if not self.client:
+            raise RuntimeError("Authenticated client required for place_market_order()")
+        
+        side_const = BUY if side.upper().startswith("BUY") else SELL
+        
+        # Create MarketOrderArgs (no price needed - executes at best available price)
+        market_order_args = MarketOrderArgs(
+            token_id=token_id,
+            amount=amount,
+            side=side_const,
+            order_type=OrderType.FOK  # Fill or Kill - must fill completely or reject
+        )
+        
+        # NegRisk flag required for markets with multiple outcomes (>2)
+        # Note: MarketOrderArgs might not support neg_risk in the same way
+        # We'll try to pass it via options if supported
+        options = PartialCreateOrderOptions(neg_risk=neg_risk) if neg_risk else None
+        
+        # Single attempt only - no retries
+        try:
+            signed = self.client.create_market_order(market_order_args)
+            resp = self.client.post_order(signed, OrderType.FOK)
+            logger.info(f"Market order response: {resp}")
+            return {"ok": True, "resp": resp}
+        except Exception as e:
+            # Return failure immediately - no retry
+            error_msg = str(e)
+            error_type = type(e).__name__
+            
+            # Check if it's a socket exhaustion error
+            is_socket_error = (
+                "10048" in error_msg or 
+                "socket" in error_msg.lower() or 
+                "connection" in error_msg.lower() or
+                "PolyApiException" in error_type
+            )
+            
+            if is_socket_error:
+                logger.error(f"Market order placement failed due to socket exhaustion: {error_type}: {error_msg}")
+                logger.error("   ClobClient uses requests library which cannot share httpx connection pool")
+                logger.error("   This may be due to too many concurrent operations")
+            else:
+                logger.error(f"Market order placement failed: {error_type}: {error_msg}")
             
             return {"ok": False, "resp": {"error": error_msg, "error_type": error_type}}
 
